@@ -144,18 +144,20 @@ async Task<SeleniumHeaderDTO> test_browser()
 //        JsonSerializer.Serialize(seleniumHeaders,
 //        new JsonSerializerOptions { WriteIndented = true })
 //    );
-
-SeleniumHeaderDTO seleniumHeaders = await test_browser();
-Console.WriteLine(
-        JsonSerializer.Serialize(seleniumHeaders,
-        new JsonSerializerOptions { WriteIndented = true })
-    );
-for (var i = 0; i < 15; i++)
+for (int k = 0; k < 100; k++)
 {
-    await TestBatch(seleniumHeaders);
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.WriteLine("\n______________________________\n\n");
-    Console.ResetColor();
+    SeleniumHeaderDTO seleniumHeaders = await test_browser();
+    Console.WriteLine(
+            JsonSerializer.Serialize(seleniumHeaders,
+            new JsonSerializerOptions { WriteIndented = true })
+        );
+    for (var i = 0; i < 20; i++)
+    {
+        await TestBatch(seleniumHeaders);
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine("\n______________________________\n\n");
+        Console.ResetColor();
+    }
 }
 
 
