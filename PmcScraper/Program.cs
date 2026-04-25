@@ -9,6 +9,7 @@ bases["pmc"] = "https://pmc.bregulator.com";
 bases["local"] = "http://localhost:8000";
 string envBase = args.Length > 0 ? args[0].ToLowerInvariant() : "pmc";
 string workerName = args.Length > 1 ? args[1] : "colab1";
+Console.WriteLine($"\nWorker: {workerName}\nEnv Base:{envBase}\n");
 
 if (!bases.ContainsKey(envBase))
 {
