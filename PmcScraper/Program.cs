@@ -1,9 +1,6 @@
-using OpenQA.Selenium;
-using OpenQA.Selenium.Chrome;
-using OpenQA.Selenium.Firefox;
 using PmcScraper;
 using PmcScraper.DTOs;
-using System.Runtime.InteropServices;
+using System.Net;
 using System.Text.Json;
 
 Dictionary<string, string> bases = new Dictionary<string, string>();
@@ -16,165 +13,67 @@ if (!bases.ContainsKey(envBase))
 {
     Console.ForegroundColor = ConsoleColor.Red;
     Console.Error.WriteLine($"[FATAL] Invalid envBase '{envBase}'. Valid values: {string.Join(", ", bases.Keys)}");
-    Console.Error.WriteLine("Usage: dotnet run -- <envBase> <workerName> [firefox|chrome]");
+    Console.Error.WriteLine("Usage: dotnet run -- <envBase> <workerName>");
     Console.ResetColor();
     return;
 }
 
-// Linux/Colab: Firefox often exits with status 255 as root; Chromium + --no-sandbox is the reliable path.
-string browserKind = args.Length > 2 && !string.IsNullOrWhiteSpace(args[2])
-    ? args[2].Trim().ToLowerInvariant()
-    : (Environment.GetEnvironmentVariable("PMC_BROWSER")?.Trim().ToLowerInvariant()
-       ?? (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "chrome" : "firefox"));
+Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\n");
 
-if (browserKind is not ("firefox" or "chrome"))
+// Fetch cookies and a plausible User-Agent from PMC without any browser dependency.
+// This replaces the old Selenium test_browser(); HttpClient works on any OS / container.
+async Task<SeleniumHeaderDTO> FetchPmcHeadersAsync()
 {
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.Error.WriteLine($"[FATAL] Invalid browser '{browserKind}'. Use firefox or chrome.");
-    Console.Error.WriteLine("Usage: dotnet run -- <envBase> <workerName> [firefox|chrome]");
-    Console.Error.WriteLine("Or set PMC_BROWSER=firefox|chrome");
-    Console.ResetColor();
-    return;
-}
+    var dto = new SeleniumHeaderDTO();
 
-Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\nBrowser: {browserKind}\n");
-
-static string? ResolveFirefoxBinaryPath()
-{
-    foreach (var key in new[] { "PMC_FIREFOX_BIN", "FIREFOX_BIN", "MOZ_FIREFOX_BIN" })
+    var cookieContainer = new CookieContainer();
+    using var handler = new HttpClientHandler
     {
-        var fromEnv = Environment.GetEnvironmentVariable(key);
-        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
-            return fromEnv;
-    }
+        CookieContainer = cookieContainer,
+        AllowAutoRedirect = true,
+        UseCookies = true,
+    };
+    using var http = new HttpClient(handler);
 
-    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-    {
-        foreach (var candidate in new[]
-                 {
-                     "/usr/bin/firefox",
-                     "/usr/bin/firefox-esr",
-                     "/usr/local/bin/firefox",
-                     "/snap/bin/firefox",
-                 })
-        {
-            if (File.Exists(candidate))
-                return candidate;
-        }
-    }
-    else
-    {
-        foreach (var candidate in new[]
-                 {
-                     @"C:\Program Files\Mozilla Firefox\firefox.exe",
-                     @"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
-                 })
-        {
-            if (File.Exists(candidate))
-                return candidate;
-        }
-    }
+    const string userAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/124.0.0.0 Safari/537.36";
 
-    return null;
-}
+    http.DefaultRequestHeaders.Add("User-Agent", userAgent);
+    http.DefaultRequestHeaders.Add("Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+    http.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
 
-// Colab/Docker often run as root; Firefox can exit 255 unless sandboxing is relaxed for headless.
-static void PrepareFirefoxForLinuxContainers(FirefoxOptions options)
-{
-    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-        return;
+    const string pmcHome = "https://pmc.ncbi.nlm.nih.gov/";
+    Console.WriteLine($"Fetching PMC headers from {pmcHome} ...");
 
-    // Inherited by the Firefox child process.
-    Environment.SetEnvironmentVariable("MOZ_HEADLESS", "1");
-    Environment.SetEnvironmentVariable("MOZ_DISABLE_CONTENT_SANDBOX", "1");
-    Environment.SetEnvironmentVariable("MOZ_DISABLE_GMP_SANDBOX", "1");
-    Environment.SetEnvironmentVariable("MOZ_FORCE_DISABLE_SANDBOX", "1");
-
-    options.SetPreference("security.sandbox.content.level", 0);
-    options.SetPreference("layers.acceleration.disabled", true);
-}
-
-static string? ResolveChromeBinaryPath()
-{
-    foreach (var key in new[] { "PMC_CHROME_BIN", "CHROME_BIN", "GOOGLE_CHROME_BIN" })
-    {
-        var fromEnv = Environment.GetEnvironmentVariable(key);
-        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
-            return fromEnv;
-    }
-
-    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-    {
-        foreach (var candidate in new[]
-                 {
-                     "/usr/bin/google-chrome-stable",
-                     "/usr/bin/google-chrome",
-                     "/usr/bin/chromium",
-                     "/usr/bin/chromium-browser",
-                 })
-        {
-            if (File.Exists(candidate))
-                return candidate;
-        }
-    }
-    else
-    {
-        foreach (var candidate in new[]
-                 {
-                     @"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                     @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                 })
-        {
-            if (File.Exists(candidate))
-                return candidate;
-        }
-    }
-
-    return null;
-}
-
-static void ApplyChromeHeadlessWindow(ChromeOptions options)
-{
-    options.AddArgument("--headless=new");
-    options.AddArgument("--window-size=1920,1080");
-}
-
-// Colab/Docker run as root; Chromium needs these flags or the renderer is killed.
-static void PrepareChromeForLinuxContainers(ChromeOptions options)
-{
-    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-        return;
-
-    ApplyChromeHeadlessWindow(options);
-    options.AddArgument("--no-sandbox");
-    options.AddArgument("--disable-dev-shm-usage");
-    options.AddArgument("--disable-gpu");
-    options.AddArgument("--disable-software-rasterizer");
-}
-
-static void FillHeadersFromDriver(IWebDriver driver, SeleniumHeaderDTO dto)
-{
-    foreach (var c in driver.Manage().Cookies.AllCookies)
-        dto.Cookies.Add(c.Name, c.Value);
-
-    dto.Headers.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-    dto.Headers.Add("Cache-Control", "max-age=0");
-
-    string userAgent;
+    HttpResponseMessage response;
     try
     {
-        var ua = ((IJavaScriptExecutor)driver).ExecuteScript("return navigator.userAgent;");
-        userAgent = ua as string ?? "Mozilla/5.0 (compatible; PmcScraper/1.0)";
+        response = await http.GetAsync(pmcHome);
     }
-    catch
+    catch (Exception ex)
     {
-        userAgent = "Mozilla/5.0 (compatible; PmcScraper/1.0)";
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Error.WriteLine($"[FATAL] Could not reach {pmcHome}: {ex.Message}");
+        Console.ResetColor();
+        throw;
     }
 
-    if (string.IsNullOrWhiteSpace(userAgent))
-        userAgent = "Mozilla/5.0 (compatible; PmcScraper/1.0)";
+    Console.WriteLine($"PMC responded: {(int)response.StatusCode} {response.ReasonPhrase}");
 
-    dto.Headers.Add("User-Agent", userAgent);
+    // Collect all cookies set by PMC (including after redirects).
+    foreach (Cookie c in cookieContainer.GetAllCookies())
+        dto.Cookies.TryAdd(c.Name, c.Value);
+
+    dto.Headers["User-Agent"] = userAgent;
+    dto.Headers["Accept"] =
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
+    dto.Headers["Accept-Language"] = "en-US,en;q=0.9";
+    dto.Headers["Cache-Control"] = "max-age=0";
+
+    return dto;
 }
 
 async Task TestFromFilesAsync()
@@ -209,7 +108,7 @@ async Task TestFromFilesAsync()
             Console.ResetColor();
         }
     }
-    Console.WriteLine($"\nDone — {succeeded} succeeded, {failed} failed out of {htmlFiles.Count()} files.");
+    Console.WriteLine($"\nDone — {succeeded} succeeded, {failed} failed out of {htmlFiles.Count} files.");
 }
 
 async Task TestFromUrlAsync()
@@ -229,10 +128,10 @@ async Task TestFromUrlAsync()
 
 //await TestFromUrlAsync();
 //await TestFromFilesAsync();
-async Task TestBatch(SeleniumHeaderDTO seleniumHeaders, string envBase)
+async Task TestBatch(SeleniumHeaderDTO pmcHeaders, string currentEnvBase)
 {
     List<int> ids = new List<int>();
-    using (var apiCall = new ArticleApiCall(bases[envBase]))
+    using (var apiCall = new ArticleApiCall(bases[currentEnvBase]))
     {
         var health = await apiCall.HealthCheckAsync();
         Console.WriteLine($"Health: {health.Status}");
@@ -243,21 +142,23 @@ async Task TestBatch(SeleniumHeaderDTO seleniumHeaders, string envBase)
 
     if (ids.Count > 0)
     {
-        using var idBatchExtractor = new ArticleExtractor(delayTime: 300, seleniumHeaders.Headers, seleniumHeaders.Cookies);
+        using var idBatchExtractor = new ArticleExtractor(delayTime: 300, pmcHeaders.Headers, pmcHeaders.Cookies);
         var articles = await idBatchExtractor.ExtractDataFromIdsAsync(ids);
         Console.WriteLine($"Extracted {articles.Count} articles from {ids.Count} PMC IDs.");
-        //await idBatchExtractor.SaveToJsonAsync(articles, new FileInfo(@"/home/behzad/pmc_json/articles_temp.json"));
 
         var scrapedIds = articles.Select(a => a.PmcId).ToHashSet();
         var successDict = scrapedIds.ToDictionary(id => id, _ => true);
         var errorDict = ids
             .Where(id => !scrapedIds.Contains(id))
             .ToDictionary(id => id, _ => "Extraction failed");
-        List<int>? _FullTextIds = articles.Where(x => x.Sections != null && x.Sections.Count > 0).Select(y => y.PmcId).ToList();
+        var fullTextIds = articles
+            .Where(x => x.Sections != null && x.Sections.Count > 0)
+            .Select(y => y.PmcId)
+            .ToList();
 
         var updateItems = articles.Select(ArticleUpdateItemDto.FromArticleDTO).ToList();
 
-        using (var apiCall = new ArticleApiCall(bases[envBase]))
+        using (var apiCall = new ArticleApiCall(bases[currentEnvBase]))
         {
             var health1 = await apiCall.HealthCheckAsync();
             Console.WriteLine($"Health: {health1.Status}");
@@ -268,135 +169,29 @@ async Task TestBatch(SeleniumHeaderDTO seleniumHeaders, string envBase)
                 Articles = updateItems,
                 SuccessDict = successDict,
                 ErrorDict = errorDict,
-                FullTextIds = _FullTextIds.Count() > 0 ? _FullTextIds : null
+                FullTextIds = fullTextIds.Count > 0 ? fullTextIds : null
             });
             Console.WriteLine($"Submit result — success: {response.Success}" +
                 (response.Error != null ? $", error: {response.Error}" : ""));
         }
     }
-
 }
 
-
-async Task<SeleniumHeaderDTO> test_browser(string browserKind)
-{
-    if (browserKind == "chrome")
-    {
-        var seleniumHeaders = new SeleniumHeaderDTO();
-        var options = new ChromeOptions();
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            PrepareChromeForLinuxContainers(options);
-        else
-            ApplyChromeHeadlessWindow(options);
-
-        var chromeBin = ResolveChromeBinaryPath();
-        if (chromeBin != null)
-            options.BinaryLocation = chromeBin;
-
-        ChromeDriver driver;
-        try
-        {
-            driver = new ChromeDriver(options);
-        }
-        catch (Exception ex)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.Error.WriteLine($"[FATAL] Could not start Chrome / ChromeDriver: {ex.Message}");
-            Console.Error.WriteLine("On Colab, install Chromium, for example:");
-            Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y chromium-browser");
-            Console.Error.WriteLine("Or: apt-get install -y chromium (on newer Debian/Ubuntu).");
-            Console.Error.WriteLine("Or set PMC_CHROME_BIN to the chrome/chromium executable.");
-            Console.Error.WriteLine("On Linux you can use Firefox instead: dotnet run -- <envBase> <worker> firefox");
-            Console.ResetColor();
-            throw;
-        }
-
-        using (driver)
-        {
-            driver.Navigate().GoToUrl("https://pmc.ncbi.nlm.nih.gov/");
-            Thread.Sleep(5000);
-            FillHeadersFromDriver(driver, seleniumHeaders);
-            return seleniumHeaders;
-        }
-    }
-
-    {
-        var seleniumHeaders = new SeleniumHeaderDTO();
-        var options = new FirefoxOptions();
-
-        PrepareFirefoxForLinuxContainers(options);
-
-        options.AddArgument("--headless");
-        options.AddArgument("-headless");
-        options.AddArgument("--window-size=1920,1080");
-
-        var firefoxBin = ResolveFirefoxBinaryPath();
-        if (firefoxBin != null)
-        {
-            options.BinaryLocation = firefoxBin;
-        }
-        else
-        {
-            options.BrowserVersion = "stable";
-        }
-
-        FirefoxDriver driver;
-        try
-        {
-            driver = new FirefoxDriver(options);
-        }
-        catch (Exception ex)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.Error.WriteLine($"[FATAL] Could not start Firefox / GeckoDriver: {ex.Message}");
-            Console.Error.WriteLine("On Google Colab or other minimal Linux images, install Firefox first, for example:");
-            Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y firefox-esr");
-            Console.Error.WriteLine("Or set PMC_FIREFOX_BIN to the full path of the firefox executable.");
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            {
-                Console.Error.WriteLine("Firefox often still fails on Colab (root, status 255). Prefer Chromium:");
-                Console.Error.WriteLine("  dotnet run -- <envBase> <worker> chrome");
-                Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y chromium-browser");
-            }
-
-            Console.ResetColor();
-            throw;
-        }
-
-        using (driver)
-        {
-            driver.Navigate().GoToUrl("https://pmc.ncbi.nlm.nih.gov/");
-            Thread.Sleep(5000);
-            FillHeadersFromDriver(driver, seleniumHeaders);
-            return seleniumHeaders;
-        }
-    }
-}
-
-//var seleniumHeaders = await test_browser();
-//Console.WriteLine(
-//        JsonSerializer.Serialize(seleniumHeaders,
-//        new JsonSerializerOptions { WriteIndented = true })
-//    );
 for (int k = 0; k < 100; k++)
 {
-    SeleniumHeaderDTO SeleniumHeaders = await test_browser(browserKind);
+    SeleniumHeaderDTO pmcHeaders = await FetchPmcHeadersAsync();
     Console.WriteLine(
-            JsonSerializer.Serialize(SeleniumHeaders,
-            new JsonSerializerOptions { WriteIndented = true })
-        );
+        JsonSerializer.Serialize(pmcHeaders,
+        new JsonSerializerOptions { WriteIndented = true })
+    );
     for (var i = 0; i < 20; i++)
     {
-        await TestBatch(SeleniumHeaders, envBase);
+        await TestBatch(pmcHeaders, envBase);
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine("\n______________________________\n\n");
         Console.ResetColor();
     }
 }
-
-
-
 
 
 // List<int> ids =
