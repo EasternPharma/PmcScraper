@@ -60,6 +60,22 @@ static string? ResolveFirefoxBinaryPath()
     return null;
 }
 
+// Colab/Docker often run as root; Firefox can exit 255 unless sandboxing is relaxed for headless.
+static void PrepareFirefoxForLinuxContainers(FirefoxOptions options)
+{
+    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        return;
+
+    // Inherited by the Firefox child process.
+    Environment.SetEnvironmentVariable("MOZ_HEADLESS", "1");
+    Environment.SetEnvironmentVariable("MOZ_DISABLE_CONTENT_SANDBOX", "1");
+    Environment.SetEnvironmentVariable("MOZ_DISABLE_GMP_SANDBOX", "1");
+    Environment.SetEnvironmentVariable("MOZ_FORCE_DISABLE_SANDBOX", "1");
+
+    options.SetPreference("security.sandbox.content.level", 0);
+    options.SetPreference("layers.acceleration.disabled", true);
+}
+
 async Task TestFromFilesAsync()
 {
     string dirPath = @"E:\pmc_txt";
@@ -166,6 +182,8 @@ async Task<SeleniumHeaderDTO> test_browser()
     SeleniumHeaderDTO seleniumHeaders = new SeleniumHeaderDTO();
     var options = new FirefoxOptions();
 
+    PrepareFirefoxForLinuxContainers(options);
+
     // Silent / no UI (both forms are accepted across Firefox versions)
     options.AddArgument("--headless");
     options.AddArgument("-headless");
@@ -194,6 +212,11 @@ async Task<SeleniumHeaderDTO> test_browser()
         Console.Error.WriteLine("On Google Colab or other minimal Linux images, install Firefox first, for example:");
         Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y firefox-esr");
         Console.Error.WriteLine("Or set PMC_FIREFOX_BIN to the full path of the firefox executable.");
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            Console.Error.WriteLine("If you already installed Firefox and still see status 255, Colab runs as root; this build relaxes the Firefox sandbox for that case.");
+        }
+
         Console.ResetColor();
         throw;
     }
