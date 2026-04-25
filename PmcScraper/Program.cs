@@ -4,6 +4,12 @@ using PmcScraper;
 using PmcScraper.DTOs;
 using System.Text.Json;
 
+Dictionary<string, string> bases = new Dictionary<string, string>();
+bases["pmc"] = "https://pmc.bregulator.com";
+bases["local"] = "http://localhost:8000";
+string EnvBase = "pmc";
+string WorkerName = "colab1";
+
 async Task TestFromFilesAsync()
 {
     string dirPath = @"E:\pmc_txt";
@@ -56,14 +62,14 @@ async Task TestFromUrlAsync()
 
 //await TestFromUrlAsync();
 //await TestFromFilesAsync();
-async Task TestBatch(SeleniumHeaderDTO seleniumHeaders)
+async Task TestBatch(SeleniumHeaderDTO seleniumHeaders, string envBase)
 {
     List<int> ids = new List<int>();
-    using (var apiCall = new ArticleApiCall("http://localhost:8000"))
+    using (var apiCall = new ArticleApiCall(bases[envBase]))
     {
         var health = await apiCall.HealthCheckAsync();
         Console.WriteLine($"Health: {health.Status}");
-        var freeArticles = await apiCall.ClaimFreeArticlesAsync(new GetFreeArticleRequestDto { User = "worker-1", BatchSize = 10 });
+        var freeArticles = await apiCall.ClaimFreeArticlesAsync(new GetFreeArticleRequestDto { User = WorkerName, BatchSize = 10 });
         ids = freeArticles.Select(x => x.PmcId).ToList();
         Console.WriteLine($"Claimed {ids.Count} free articles.");
     }
@@ -84,14 +90,14 @@ async Task TestBatch(SeleniumHeaderDTO seleniumHeaders)
 
         var updateItems = articles.Select(ArticleUpdateItemDto.FromArticleDTO).ToList();
 
-        using (var apiCall = new ArticleApiCall("http://localhost:8000"))
+        using (var apiCall = new ArticleApiCall(bases[envBase]))
         {
             var health1 = await apiCall.HealthCheckAsync();
             Console.WriteLine($"Health: {health1.Status}");
             Console.WriteLine($"Submitting {updateItems.Count} articles...");
             var response = await apiCall.SubmitScrapeResultsAsync(new ScrapeArticleRequestDto
             {
-                User = "worker-1",
+                User = WorkerName,
                 Articles = updateItems,
                 SuccessDict = successDict,
                 ErrorDict = errorDict,
@@ -146,14 +152,14 @@ async Task<SeleniumHeaderDTO> test_browser()
 //    );
 for (int k = 0; k < 100; k++)
 {
-    SeleniumHeaderDTO seleniumHeaders = await test_browser();
+    SeleniumHeaderDTO SeleniumHeaders = await test_browser();
     Console.WriteLine(
-            JsonSerializer.Serialize(seleniumHeaders,
+            JsonSerializer.Serialize(SeleniumHeaders,
             new JsonSerializerOptions { WriteIndented = true })
         );
     for (var i = 0; i < 20; i++)
     {
-        await TestBatch(seleniumHeaders);
+        await TestBatch(SeleniumHeaders, EnvBase);
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine("\n______________________________\n\n");
         Console.ResetColor();
