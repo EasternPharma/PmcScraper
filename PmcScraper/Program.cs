@@ -2,6 +2,7 @@ using OpenQA.Selenium;
 using OpenQA.Selenium.Firefox;
 using PmcScraper;
 using PmcScraper.DTOs;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 Dictionary<string, string> bases = new Dictionary<string, string>();
@@ -18,6 +19,45 @@ if (!bases.ContainsKey(envBase))
     Console.Error.WriteLine("Usage: dotnet run -- <envBase> <workerName>");
     Console.ResetColor();
     return;
+}
+
+static string? ResolveFirefoxBinaryPath()
+{
+    foreach (var key in new[] { "PMC_FIREFOX_BIN", "FIREFOX_BIN", "MOZ_FIREFOX_BIN" })
+    {
+        var fromEnv = Environment.GetEnvironmentVariable(key);
+        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
+            return fromEnv;
+    }
+
+    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+    {
+        foreach (var candidate in new[]
+                 {
+                     "/usr/bin/firefox",
+                     "/usr/bin/firefox-esr",
+                     "/usr/local/bin/firefox",
+                     "/snap/bin/firefox",
+                 })
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+    }
+    else
+    {
+        foreach (var candidate in new[]
+                 {
+                     @"C:\Program Files\Mozilla Firefox\firefox.exe",
+                     @"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+                 })
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+    }
+
+    return null;
 }
 
 async Task TestFromFilesAsync()
@@ -126,33 +166,58 @@ async Task<SeleniumHeaderDTO> test_browser()
     SeleniumHeaderDTO seleniumHeaders = new SeleniumHeaderDTO();
     var options = new FirefoxOptions();
 
-    // Silent / no UI
+    // Silent / no UI (both forms are accepted across Firefox versions)
     options.AddArgument("--headless");
-
+    options.AddArgument("-headless");
     options.AddArgument("--window-size=1920,1080");
 
-    // When Firefox is not installed, Selenium Manager can provision a managed browser.
-    options.BrowserVersion = "stable";
-    using var driver = new FirefoxDriver(options);
-
-    driver.Navigate().GoToUrl("https://pmc.ncbi.nlm.nih.gov/");
-
-    Thread.Sleep(5000);
-
-    // Cookies
-    var cookies = driver.Manage().Cookies.AllCookies;
-    var cookies_str = driver.Manage().Cookies.ToString();
-
-    var cookieDict = new Dictionary<string, string>();
-
-    foreach (var c in cookies)
+    var firefoxBin = ResolveFirefoxBinaryPath();
+    if (firefoxBin != null)
     {
-        seleniumHeaders.Cookies.Add(c.Name, c.Value);
+        options.BinaryLocation = firefoxBin;
     }
-    seleniumHeaders.Headers.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-    seleniumHeaders.Headers.Add("Cache-Control", "max-age=0");
-    seleniumHeaders.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0");
-    return seleniumHeaders;
+    else
+    {
+        // When no system Firefox is found, Selenium Manager may download a managed browser (needs network).
+        options.BrowserVersion = "stable";
+    }
+
+    FirefoxDriver driver;
+    try
+    {
+        driver = new FirefoxDriver(options);
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Error.WriteLine($"[FATAL] Could not start Firefox / GeckoDriver: {ex.Message}");
+        Console.Error.WriteLine("On Google Colab or other minimal Linux images, install Firefox first, for example:");
+        Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y firefox-esr");
+        Console.Error.WriteLine("Or set PMC_FIREFOX_BIN to the full path of the firefox executable.");
+        Console.ResetColor();
+        throw;
+    }
+
+    using (driver)
+    {
+
+        driver.Navigate().GoToUrl("https://pmc.ncbi.nlm.nih.gov/");
+
+        Thread.Sleep(5000);
+
+        // Cookies
+        var cookies = driver.Manage().Cookies.AllCookies;
+
+        foreach (var c in cookies)
+        {
+            seleniumHeaders.Cookies.Add(c.Name, c.Value);
+        }
+
+        seleniumHeaders.Headers.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
+        seleniumHeaders.Headers.Add("Cache-Control", "max-age=0");
+        seleniumHeaders.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0");
+        return seleniumHeaders;
+    }
 }
 
 //var seleniumHeaders = await test_browser();
