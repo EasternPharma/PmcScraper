@@ -7,8 +7,17 @@ using System.Text.Json;
 Dictionary<string, string> bases = new Dictionary<string, string>();
 bases["pmc"] = "https://pmc.bregulator.com";
 bases["local"] = "http://localhost:8000";
-string EnvBase = "pmc";
-string WorkerName = "colab1";
+string envBase = args.Length > 0 ? args[0].ToLowerInvariant() : "pmc";
+string workerName = args.Length > 1 ? args[1] : "colab1";
+
+if (!bases.ContainsKey(envBase))
+{
+    Console.ForegroundColor = ConsoleColor.Red;
+    Console.Error.WriteLine($"[FATAL] Invalid envBase '{envBase}'. Valid values: {string.Join(", ", bases.Keys)}");
+    Console.Error.WriteLine("Usage: dotnet run -- <envBase> <workerName>");
+    Console.ResetColor();
+    return;
+}
 
 async Task TestFromFilesAsync()
 {
@@ -69,7 +78,7 @@ async Task TestBatch(SeleniumHeaderDTO seleniumHeaders, string envBase)
     {
         var health = await apiCall.HealthCheckAsync();
         Console.WriteLine($"Health: {health.Status}");
-        var freeArticles = await apiCall.ClaimFreeArticlesAsync(new GetFreeArticleRequestDto { User = WorkerName, BatchSize = 10 });
+        var freeArticles = await apiCall.ClaimFreeArticlesAsync(new GetFreeArticleRequestDto { User = workerName, BatchSize = 10 });
         ids = freeArticles.Select(x => x.PmcId).ToList();
         Console.WriteLine($"Claimed {ids.Count} free articles.");
     }
@@ -97,7 +106,7 @@ async Task TestBatch(SeleniumHeaderDTO seleniumHeaders, string envBase)
             Console.WriteLine($"Submitting {updateItems.Count} articles...");
             var response = await apiCall.SubmitScrapeResultsAsync(new ScrapeArticleRequestDto
             {
-                User = WorkerName,
+                User = workerName,
                 Articles = updateItems,
                 SuccessDict = successDict,
                 ErrorDict = errorDict,
@@ -159,7 +168,7 @@ for (int k = 0; k < 100; k++)
         );
     for (var i = 0; i < 20; i++)
     {
-        await TestBatch(SeleniumHeaders, EnvBase);
+        await TestBatch(SeleniumHeaders, envBase);
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine("\n______________________________\n\n");
         Console.ResetColor();
