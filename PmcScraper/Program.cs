@@ -1,7 +1,5 @@
 using OpenQA.Selenium;
-using OpenQA.Selenium.Chrome;
-using OpenQA.Selenium.DevTools;
-using OpenQA.Selenium.DevTools.V147.Network;
+using OpenQA.Selenium.Firefox;
 using PmcScraper;
 using PmcScraper.DTOs;
 using System.Text.Json;
@@ -110,27 +108,16 @@ async Task TestBatch(SeleniumHeaderDTO seleniumHeaders)
 async Task<SeleniumHeaderDTO> test_browser()
 {
     SeleniumHeaderDTO seleniumHeaders = new SeleniumHeaderDTO();
-    var options = new ChromeOptions();
+    var options = new FirefoxOptions();
 
     // Silent / no UI
-    options.AddArgument("--headless=new");
+    options.AddArgument("--headless");
 
-    // Better for Linux / Colab
-    options.AddArgument("--no-sandbox");
-    options.AddArgument("--disable-dev-shm-usage");
-
-    options.AddArgument("--disable-gpu");
     options.AddArgument("--window-size=1920,1080");
 
-    using var driver = new ChromeDriver(options);
-
-    var devTools = driver as IDevTools;
-    var session = devTools.GetDevToolsSession();
-
-    var domains = session.GetVersionSpecificDomains<
-        OpenQA.Selenium.DevTools.V147.DevToolsSessionDomains>();
-
-    await domains.Network.Enable(new EnableCommandSettings());
+    // When Firefox is not installed, Selenium Manager can provision a managed browser.
+    options.BrowserVersion = "stable";
+    using var driver = new FirefoxDriver(options);
 
     driver.Navigate().GoToUrl("https://pmc.ncbi.nlm.nih.gov/");
 
@@ -148,7 +135,7 @@ async Task<SeleniumHeaderDTO> test_browser()
     }
     seleniumHeaders.Headers.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
     seleniumHeaders.Headers.Add("Cache-Control", "max-age=0");
-    seleniumHeaders.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36");
+    seleniumHeaders.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0");
     return seleniumHeaders;
 }
 
