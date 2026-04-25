@@ -1,4 +1,5 @@
 using OpenQA.Selenium;
+using OpenQA.Selenium.Chrome;
 using OpenQA.Selenium.Firefox;
 using PmcScraper;
 using PmcScraper.DTOs;
@@ -10,16 +11,33 @@ bases["pmc"] = "https://pmc.bregulator.com";
 bases["local"] = "http://localhost:8000";
 string envBase = args.Length > 0 ? args[0].ToLowerInvariant() : "pmc";
 string workerName = args.Length > 1 ? args[1] : "colab1";
-Console.WriteLine($"\nWorker: {workerName}\nEnv Base:{envBase}\n");
 
 if (!bases.ContainsKey(envBase))
 {
     Console.ForegroundColor = ConsoleColor.Red;
     Console.Error.WriteLine($"[FATAL] Invalid envBase '{envBase}'. Valid values: {string.Join(", ", bases.Keys)}");
-    Console.Error.WriteLine("Usage: dotnet run -- <envBase> <workerName>");
+    Console.Error.WriteLine("Usage: dotnet run -- <envBase> <workerName> [firefox|chrome]");
     Console.ResetColor();
     return;
 }
+
+// Linux/Colab: Firefox often exits with status 255 as root; Chromium + --no-sandbox is the reliable path.
+string browserKind = args.Length > 2 && !string.IsNullOrWhiteSpace(args[2])
+    ? args[2].Trim().ToLowerInvariant()
+    : (Environment.GetEnvironmentVariable("PMC_BROWSER")?.Trim().ToLowerInvariant()
+       ?? (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "chrome" : "firefox"));
+
+if (browserKind is not ("firefox" or "chrome"))
+{
+    Console.ForegroundColor = ConsoleColor.Red;
+    Console.Error.WriteLine($"[FATAL] Invalid browser '{browserKind}'. Use firefox or chrome.");
+    Console.Error.WriteLine("Usage: dotnet run -- <envBase> <workerName> [firefox|chrome]");
+    Console.Error.WriteLine("Or set PMC_BROWSER=firefox|chrome");
+    Console.ResetColor();
+    return;
+}
+
+Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\nBrowser: {browserKind}\n");
 
 static string? ResolveFirefoxBinaryPath()
 {
@@ -74,6 +92,89 @@ static void PrepareFirefoxForLinuxContainers(FirefoxOptions options)
 
     options.SetPreference("security.sandbox.content.level", 0);
     options.SetPreference("layers.acceleration.disabled", true);
+}
+
+static string? ResolveChromeBinaryPath()
+{
+    foreach (var key in new[] { "PMC_CHROME_BIN", "CHROME_BIN", "GOOGLE_CHROME_BIN" })
+    {
+        var fromEnv = Environment.GetEnvironmentVariable(key);
+        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
+            return fromEnv;
+    }
+
+    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+    {
+        foreach (var candidate in new[]
+                 {
+                     "/usr/bin/google-chrome-stable",
+                     "/usr/bin/google-chrome",
+                     "/usr/bin/chromium",
+                     "/usr/bin/chromium-browser",
+                 })
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+    }
+    else
+    {
+        foreach (var candidate in new[]
+                 {
+                     @"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                     @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                 })
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+    }
+
+    return null;
+}
+
+static void ApplyChromeHeadlessWindow(ChromeOptions options)
+{
+    options.AddArgument("--headless=new");
+    options.AddArgument("--window-size=1920,1080");
+}
+
+// Colab/Docker run as root; Chromium needs these flags or the renderer is killed.
+static void PrepareChromeForLinuxContainers(ChromeOptions options)
+{
+    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        return;
+
+    ApplyChromeHeadlessWindow(options);
+    options.AddArgument("--no-sandbox");
+    options.AddArgument("--disable-dev-shm-usage");
+    options.AddArgument("--disable-gpu");
+    options.AddArgument("--disable-software-rasterizer");
+}
+
+static void FillHeadersFromDriver(IWebDriver driver, SeleniumHeaderDTO dto)
+{
+    foreach (var c in driver.Manage().Cookies.AllCookies)
+        dto.Cookies.Add(c.Name, c.Value);
+
+    dto.Headers.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
+    dto.Headers.Add("Cache-Control", "max-age=0");
+
+    string userAgent;
+    try
+    {
+        var ua = ((IJavaScriptExecutor)driver).ExecuteScript("return navigator.userAgent;");
+        userAgent = ua as string ?? "Mozilla/5.0 (compatible; PmcScraper/1.0)";
+    }
+    catch
+    {
+        userAgent = "Mozilla/5.0 (compatible; PmcScraper/1.0)";
+    }
+
+    if (string.IsNullOrWhiteSpace(userAgent))
+        userAgent = "Mozilla/5.0 (compatible; PmcScraper/1.0)";
+
+    dto.Headers.Add("User-Agent", userAgent);
 }
 
 async Task TestFromFilesAsync()
@@ -177,69 +278,99 @@ async Task TestBatch(SeleniumHeaderDTO seleniumHeaders, string envBase)
 }
 
 
-async Task<SeleniumHeaderDTO> test_browser()
+async Task<SeleniumHeaderDTO> test_browser(string browserKind)
 {
-    SeleniumHeaderDTO seleniumHeaders = new SeleniumHeaderDTO();
-    var options = new FirefoxOptions();
-
-    PrepareFirefoxForLinuxContainers(options);
-
-    // Silent / no UI (both forms are accepted across Firefox versions)
-    options.AddArgument("--headless");
-    options.AddArgument("-headless");
-    options.AddArgument("--window-size=1920,1080");
-
-    var firefoxBin = ResolveFirefoxBinaryPath();
-    if (firefoxBin != null)
+    if (browserKind == "chrome")
     {
-        options.BinaryLocation = firefoxBin;
-    }
-    else
-    {
-        // When no system Firefox is found, Selenium Manager may download a managed browser (needs network).
-        options.BrowserVersion = "stable";
-    }
+        var seleniumHeaders = new SeleniumHeaderDTO();
+        var options = new ChromeOptions();
 
-    FirefoxDriver driver;
-    try
-    {
-        driver = new FirefoxDriver(options);
-    }
-    catch (Exception ex)
-    {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.Error.WriteLine($"[FATAL] Could not start Firefox / GeckoDriver: {ex.Message}");
-        Console.Error.WriteLine("On Google Colab or other minimal Linux images, install Firefox first, for example:");
-        Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y firefox-esr");
-        Console.Error.WriteLine("Or set PMC_FIREFOX_BIN to the full path of the firefox executable.");
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            PrepareChromeForLinuxContainers(options);
+        else
+            ApplyChromeHeadlessWindow(options);
+
+        var chromeBin = ResolveChromeBinaryPath();
+        if (chromeBin != null)
+            options.BinaryLocation = chromeBin;
+
+        ChromeDriver driver;
+        try
         {
-            Console.Error.WriteLine("If you already installed Firefox and still see status 255, Colab runs as root; this build relaxes the Firefox sandbox for that case.");
+            driver = new ChromeDriver(options);
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Error.WriteLine($"[FATAL] Could not start Chrome / ChromeDriver: {ex.Message}");
+            Console.Error.WriteLine("On Colab, install Chromium, for example:");
+            Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y chromium-browser");
+            Console.Error.WriteLine("Or: apt-get install -y chromium (on newer Debian/Ubuntu).");
+            Console.Error.WriteLine("Or set PMC_CHROME_BIN to the chrome/chromium executable.");
+            Console.Error.WriteLine("On Linux you can use Firefox instead: dotnet run -- <envBase> <worker> firefox");
+            Console.ResetColor();
+            throw;
         }
 
-        Console.ResetColor();
-        throw;
+        using (driver)
+        {
+            driver.Navigate().GoToUrl("https://pmc.ncbi.nlm.nih.gov/");
+            Thread.Sleep(5000);
+            FillHeadersFromDriver(driver, seleniumHeaders);
+            return seleniumHeaders;
+        }
     }
 
-    using (driver)
     {
+        var seleniumHeaders = new SeleniumHeaderDTO();
+        var options = new FirefoxOptions();
 
-        driver.Navigate().GoToUrl("https://pmc.ncbi.nlm.nih.gov/");
+        PrepareFirefoxForLinuxContainers(options);
 
-        Thread.Sleep(5000);
+        options.AddArgument("--headless");
+        options.AddArgument("-headless");
+        options.AddArgument("--window-size=1920,1080");
 
-        // Cookies
-        var cookies = driver.Manage().Cookies.AllCookies;
-
-        foreach (var c in cookies)
+        var firefoxBin = ResolveFirefoxBinaryPath();
+        if (firefoxBin != null)
         {
-            seleniumHeaders.Cookies.Add(c.Name, c.Value);
+            options.BinaryLocation = firefoxBin;
+        }
+        else
+        {
+            options.BrowserVersion = "stable";
         }
 
-        seleniumHeaders.Headers.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-        seleniumHeaders.Headers.Add("Cache-Control", "max-age=0");
-        seleniumHeaders.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0");
-        return seleniumHeaders;
+        FirefoxDriver driver;
+        try
+        {
+            driver = new FirefoxDriver(options);
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Error.WriteLine($"[FATAL] Could not start Firefox / GeckoDriver: {ex.Message}");
+            Console.Error.WriteLine("On Google Colab or other minimal Linux images, install Firefox first, for example:");
+            Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y firefox-esr");
+            Console.Error.WriteLine("Or set PMC_FIREFOX_BIN to the full path of the firefox executable.");
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                Console.Error.WriteLine("Firefox often still fails on Colab (root, status 255). Prefer Chromium:");
+                Console.Error.WriteLine("  dotnet run -- <envBase> <worker> chrome");
+                Console.Error.WriteLine("  !apt-get update -qq && apt-get install -y chromium-browser");
+            }
+
+            Console.ResetColor();
+            throw;
+        }
+
+        using (driver)
+        {
+            driver.Navigate().GoToUrl("https://pmc.ncbi.nlm.nih.gov/");
+            Thread.Sleep(5000);
+            FillHeadersFromDriver(driver, seleniumHeaders);
+            return seleniumHeaders;
+        }
     }
 }
 
@@ -250,7 +381,7 @@ async Task<SeleniumHeaderDTO> test_browser()
 //    );
 for (int k = 0; k < 100; k++)
 {
-    SeleniumHeaderDTO SeleniumHeaders = await test_browser();
+    SeleniumHeaderDTO SeleniumHeaders = await test_browser(browserKind);
     Console.WriteLine(
             JsonSerializer.Serialize(SeleniumHeaders,
             new JsonSerializerOptions { WriteIndented = true })
