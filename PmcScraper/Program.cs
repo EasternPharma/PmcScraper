@@ -184,13 +184,15 @@ for (int k = 0; k < 100; k++)
         JsonSerializer.Serialize(pmcHeaders,
         new JsonSerializerOptions { WriteIndented = true })
     );
-    for (var i = 0; i < 20; i++)
+    for (var i = 0; i < 5; i++)
     {
         await TestBatch(pmcHeaders, envBase);
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine("\n______________________________\n\n");
-        Console.ResetColor();
+        Console.ForegroundColor = ConsoleColor.White;
+        await Task.Delay(1000);
     }
+    await Task.Delay(5000);
 }
 
 
