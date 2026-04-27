@@ -558,25 +558,31 @@ public class ArticleExtractor : IDisposable
                 }
                 catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
                 {
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}");
                     k++;
                     await Task.Delay(2000);
                     continue;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}");
                     k++;
                     await Task.Delay(2000);
                     continue;
                 }
                 result = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(result.Title))
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty");
+                    Console.ForegroundColor = ConsoleColor.White;
+                }
                 if (!string.IsNullOrEmpty(result.Title))
                 {
                     return result;
                 }
-                Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}");
                 await Task.Delay((i + 1) * 1000);
             }
-
         }
         catch (Exception ex)
         {
@@ -611,7 +617,15 @@ public class ArticleExtractor : IDisposable
         for (int i = 0; i < ids.Count; i++)
         {
             var article = await ExtractDataFromIdAsync(ids[i], cancellationToken).ConfigureAwait(false);
-            Console.WriteLine($"Extracted article: {article.Title} (PMC{article.PmcId})");
+
+            string title = string.IsNullOrEmpty(article.Title)
+                ? ""
+                : article.Title.Length > 50
+                    ? article.Title.Substring(0, 49) + " ..."
+                    : article.Title;
+
+            Console.WriteLine($"Extracted article: {title} (PMC{article.PmcId})");
+
             if (i > 0 && i % 15 == 0)
             {
                 await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
