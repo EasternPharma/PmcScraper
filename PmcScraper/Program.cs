@@ -184,7 +184,7 @@ async Task<int> TestBatch(SeleniumHeaderDTO pmcHeaders, string currentEnvBase)
 
 long totalProcessedCount = 0;
 DateTime overallStartTime = DateTime.Now;
-for (int k = 0; k < 1000; k++)
+for (int k = 0; k < 1500; k++)
 {
     SeleniumHeaderDTO pmcHeaders = await FetchPmcHeadersAsync();
     Console.WriteLine(
