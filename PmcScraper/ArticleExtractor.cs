@@ -28,7 +28,7 @@ public class ArticleExtractor : IDisposable
     #region Constructors Methods 
     public ArticleExtractor()
     {
-        DelayTime = 300;
+        DelayTime = 500;
     }
     public ArticleExtractor(int delayTime)
     {
@@ -581,7 +581,7 @@ public class ArticleExtractor : IDisposable
                 {
                     return result;
                 }
-                await Task.Delay((i + 1) * 1000);
+                await Task.Delay(((i + 1) * DelayTime) + ((i + 1) * (DelayTime / 2)));
             }
         }
         catch (Exception ex)
@@ -606,12 +606,15 @@ public class ArticleExtractor : IDisposable
     #endregion
 
     #region Extract Data Batch
-    /// <summary>Starts one task per ID; each task waits <c>staggerIndex * 300</c> ms (0, 300, 600, …) before fetching so requests are staggered but overlap after their delay.</summary>
+    /// <summary>Starts one task per ID; each task waits <c>DelayTime * staggerIndex</c> ms (plus <c>DelayTime/2</c> when <c>staggerIndex &gt; 5</c>) before fetching so requests are staggered.</summary>
     public async Task<List<ArticleDTO>> ExtractDataFromIdsAsync(List<int> ids, CancellationToken cancellationToken = default)
     {
         async Task<ArticleDTO?> RunStaggeredAsync(int id, int staggerIndex)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(this.DelayTime * staggerIndex), cancellationToken).ConfigureAwait(false);
+            int waitMs = DelayTime * staggerIndex;
+            if (staggerIndex > 5)
+                waitMs += DelayTime / 2;
+            await Task.Delay(TimeSpan.FromMilliseconds(waitMs), cancellationToken).ConfigureAwait(false);
             return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
         }
 
