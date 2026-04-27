@@ -614,10 +614,13 @@ public class ArticleExtractor : IDisposable
             await Task.Delay(TimeSpan.FromMilliseconds(this.DelayTime * staggerIndex), cancellationToken).ConfigureAwait(false);
             return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
         }
-        for (int i = 0; i < ids.Count; i++)
-        {
-            var article = await ExtractDataFromIdAsync(ids[i], cancellationToken).ConfigureAwait(false);
 
+        var tasks = ids.Select((id, i) => RunStaggeredAsync(id, i)).ToList();
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        var articles = results.Where(a => a != null).Select(a => a!).ToList();
+
+        foreach (var article in articles)
+        {
             string title = string.IsNullOrEmpty(article.Title)
                 ? ""
                 : article.Title.Length > 50
@@ -625,15 +628,9 @@ public class ArticleExtractor : IDisposable
                     : article.Title;
 
             Console.WriteLine($"Extracted article: {title} (PMC{article.PmcId})");
-
-            if (i > 0 && i % 15 == 0)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
-            }
         }
-        var tasks = ids.Select((id, i) => RunStaggeredAsync(id, i)).ToList();
-        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
-        return results.Where(a => a != null).Select(a => a!).ToList();
+
+        return articles;
     }
     #endregion
 
