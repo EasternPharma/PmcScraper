@@ -6,6 +6,7 @@ using System.Text.Json;
 Dictionary<string, string> bases = new Dictionary<string, string>();
 bases["pmc"] = "https://pmc.bregulator.com";
 bases["local"] = "http://localhost:8000";
+bases["office"] = "http://localhost:1368";
 string envBase = args.Length > 0 ? args[0].ToLowerInvariant() : "pmc";
 string workerName = args.Length > 1 ? args[1] : "colab1";
 
