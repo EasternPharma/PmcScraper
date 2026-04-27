@@ -527,9 +527,10 @@ public class ArticleExtractor : IDisposable
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("URL must not be null or empty.", nameof(url));
         if (_httpClient == null)
-            _httpClient = new HttpClient();
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
-        for (int i = 0; i < 5; i++)
+        int k = 5;
+        for (int i = 0; i < k && k < 15; i++)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
 
@@ -553,6 +554,12 @@ public class ArticleExtractor : IDisposable
                 response.EnsureSuccessStatusCode();
                 var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 doc.LoadHtml(html);
+            }
+            catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                k++;
+                await Task.Delay(2000);
+                continue;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
