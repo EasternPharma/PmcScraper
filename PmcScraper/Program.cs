@@ -128,7 +128,7 @@ async Task TestFromUrlAsync()
 
 //await TestFromUrlAsync();
 //await TestFromFilesAsync();
-async Task TestBatch(SeleniumHeaderDTO pmcHeaders, string currentEnvBase)
+async Task<int> TestBatch(SeleniumHeaderDTO pmcHeaders, string currentEnvBase)
 {
     List<int> ids = new List<int>();
     using (var apiCall = new ArticleApiCall(bases[currentEnvBase]))
@@ -174,9 +174,15 @@ async Task TestBatch(SeleniumHeaderDTO pmcHeaders, string currentEnvBase)
             Console.WriteLine($"Submit result — success: {response.Success}" +
                 (response.Error != null ? $", error: {response.Error}" : ""));
         }
+
+        return ids.Count;
     }
+
+    return 0;
 }
 
+long totalProcessedCount = 0;
+DateTime overallStartTime = DateTime.Now;
 for (int k = 0; k < 100; k++)
 {
     SeleniumHeaderDTO pmcHeaders = await FetchPmcHeadersAsync();
@@ -186,9 +192,19 @@ for (int k = 0; k < 100; k++)
     );
     for (var i = 0; i < 5; i++)
     {
-        await TestBatch(pmcHeaders, envBase);
+        DateTime batchStartTime = DateTime.Now;
+        var processedCount = await TestBatch(pmcHeaders, envBase);
+        totalProcessedCount += processedCount;
+        var lastBatchDurationSeconds = (DateTime.Now - batchStartTime).TotalSeconds;
+        var totalDurationMinutes = (DateTime.Now - overallStartTime).TotalMinutes;
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine("\n\n██████████████████████\n");
+        Console.ForegroundColor = ConsoleColor.White;
+        Console.WriteLine($"Batch completed in: {lastBatchDurationSeconds:F2} seconds");
+        Console.WriteLine($"Processed this batch: {processedCount}");
+        Console.WriteLine($"Total processed: {totalProcessedCount} (elapsed: {totalDurationMinutes:F2} minutes)");
         Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine("\n______________________________\n\n");
+        Console.WriteLine("\n██████████████████████\n\n");
         Console.ForegroundColor = ConsoleColor.White;
         await Task.Delay(1000);
     }
