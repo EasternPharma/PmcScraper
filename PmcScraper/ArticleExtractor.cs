@@ -476,7 +476,6 @@ public class ArticleExtractor : IDisposable
         //    Console.WriteLine("Null");
         //}
         //Console.WriteLine("____________________________\n");
-        Console.WriteLine($"Extracted article: {article.Title} (PMC{article.PmcId})");
 
         return article;
     }
@@ -574,6 +573,7 @@ public class ArticleExtractor : IDisposable
                 {
                     return result;
                 }
+                Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}");
                 await Task.Delay((i + 1) * 1000);
             }
 
@@ -606,13 +606,10 @@ public class ArticleExtractor : IDisposable
         async Task<ArticleDTO?> RunStaggeredAsync(int id, int staggerIndex)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(this.DelayTime * staggerIndex), cancellationToken).ConfigureAwait(false);
-            Console.WriteLine($"Starting extraction for ID: {id} at {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
             return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
         }
         for (int i = 0; i < ids.Count; i++)
         {
-
-            Console.WriteLine($"Starting extraction for ID: {ids[i]} at {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
             var article = await ExtractDataFromIdAsync(ids[i], cancellationToken).ConfigureAwait(false);
             Console.WriteLine($"Extracted article: {article.Title} (PMC{article.PmcId})");
             if (i > 0 && i % 15 == 0)
