@@ -530,47 +530,64 @@ public class ArticleExtractor : IDisposable
             _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
         int k = 5;
-        for (int i = 0; i < k && k < 15; i++)
+        try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-
-            if (_headers != null && _headers.Count > 0)
+            for (int i = 0; i < k && k < 15; i++)
             {
-                foreach (var header in _headers)
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+                if (_headers != null && _headers.Count > 0)
                 {
-                    request.Headers.Add(header.Key, header.Value);
+                    foreach (var header in _headers)
+                    {
+                        request.Headers.Add(header.Key, header.Value);
+                    }
                 }
-            }
-            if (_cookies != null && _cookies.Count > 0)
-            {
-                string cookieStr = string.Join("; ", _cookies.Select(x => $"{x.Key}={x.Value}"));
-                request.Headers.TryAddWithoutValidation("Cookie", cookieStr);
+                if (_cookies != null && _cookies.Count > 0)
+                {
+                    string cookieStr = string.Join("; ", _cookies.Select(x => $"{x.Key}={x.Value}"));
+                    request.Headers.TryAddWithoutValidation("Cookie", cookieStr);
+                }
+
+                var doc = new HtmlDocument();
+                try
+                {
+                    var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                    response.EnsureSuccessStatusCode();
+                    var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    doc.LoadHtml(html);
+                }
+                catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    k++;
+                    await Task.Delay(2000);
+                    continue;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+                {
+                    k++;
+                    await Task.Delay(2000);
+                    continue;
+                }
+                result = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(result.Title))
+                {
+                    return result;
+                }
+                await Task.Delay((i + 1) * 1000);
             }
 
-            var doc = new HtmlDocument();
-            try
-            {
-                var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                doc.LoadHtml(html);
-            }
-            catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                k++;
-                await Task.Delay(2000);
-                continue;
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-            {
-                throw new HttpRequestException($"Failed to fetch URL: {url}", ex);
-            }
-            result = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(result.Title))
-            {
-                return result;
-            }
-            await Task.Delay((i + 1) * 1000);
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("█░█░█░█░█░█░█░█░█░█░█░█░█░█░");
+            Console.WriteLine($"Error in PMC{pmcId}");
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine(ex.Message + "\n\n");
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("█░█░█░█░█░█░█░█░█░█░█░█░█░█░");
+            Console.ForegroundColor = ConsoleColor.White;
         }
         return result;
     }
@@ -586,7 +603,6 @@ public class ArticleExtractor : IDisposable
     /// <summary>Starts one task per ID; each task waits <c>staggerIndex * 300</c> ms (0, 300, 600, …) before fetching so requests are staggered but overlap after their delay.</summary>
     public async Task<List<ArticleDTO>> ExtractDataFromIdsAsync(List<int> ids, CancellationToken cancellationToken = default)
     {
-
         async Task<ArticleDTO?> RunStaggeredAsync(int id, int staggerIndex)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(this.DelayTime * staggerIndex), cancellationToken).ConfigureAwait(false);
