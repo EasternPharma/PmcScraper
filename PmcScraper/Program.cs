@@ -207,9 +207,9 @@ for (int k = 0; k < 1500; k++)
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine("\n██████████████████████\n\n");
         Console.ForegroundColor = ConsoleColor.White;
-        await Task.Delay(1000);
+        await Task.Delay(new Random().Next(1000, 3000));
     }
-    await Task.Delay(5000);
+    await Task.Delay(1000);
 }
 
 
