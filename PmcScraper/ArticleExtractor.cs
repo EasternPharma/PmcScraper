@@ -582,9 +582,9 @@ public class ArticleExtractor : IDisposable
                     return result;
                 }
                 await Task.Delay(((i + 2) * DelayTime) + ((i + 1) * (DelayTime / 2)));
-                if (i > 2)
+                if (i > 1)
                 {
-                    int rnd = new Random().Next(DelayTime * 2, 5000);
+                    int rnd = new Random().Next(DelayTime * 3, DelayTime * 10);
                     await Task.Delay(rnd);
                 }
             }
