@@ -528,7 +528,7 @@ public class ArticleExtractor : IDisposable
         if (_httpClient == null)
             _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
-        int k = 5;
+        int k = 7;
         try
         {
             for (int i = 0; i < k && k < 15; i++)
@@ -581,7 +581,7 @@ public class ArticleExtractor : IDisposable
                 {
                     return result;
                 }
-                await Task.Delay(((i + 1) * DelayTime) + ((i + 1) * (DelayTime / 2)));
+                await Task.Delay(((i + 2) * DelayTime) + ((i + 1) * (DelayTime / 2)));
             }
         }
         catch (Exception ex)
@@ -613,7 +613,7 @@ public class ArticleExtractor : IDisposable
         {
             int waitMs = DelayTime * staggerIndex;
             if (staggerIndex > 5)
-                waitMs += DelayTime / 2;
+                waitMs += (DelayTime * staggerIndex) / 2;
             await Task.Delay(TimeSpan.FromMilliseconds(waitMs), cancellationToken).ConfigureAwait(false);
             return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
         }
