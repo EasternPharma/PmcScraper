@@ -526,7 +526,7 @@ public class ArticleExtractor : IDisposable
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("URL must not be null or empty.", nameof(url));
         if (_httpClient == null)
-            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromMilliseconds(DelayTime * 10) };
 
         int k = 7;
         try
