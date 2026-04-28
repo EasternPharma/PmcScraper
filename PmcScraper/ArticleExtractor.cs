@@ -573,7 +573,10 @@ public class ArticleExtractor : IDisposable
                 result = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(result.Title))
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.ForegroundColor =
+                        i < 2 ? ConsoleColor.Yellow :
+                        i < 4 ? ConsoleColor.DarkYellow :
+                                ConsoleColor.Red;
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty");
                     Console.ForegroundColor = ConsoleColor.White;
                 }
@@ -584,7 +587,7 @@ public class ArticleExtractor : IDisposable
                 await Task.Delay(((i + 2) * DelayTime) + ((i + 1) * (DelayTime / 2)));
                 if (i > 1)
                 {
-                    int rnd = new Random().Next(DelayTime * 3, DelayTime * 10);
+                    int rnd = new Random().Next(DelayTime * i, DelayTime * Math.Max(10, i + 1));
                     await Task.Delay(rnd);
                 }
             }
