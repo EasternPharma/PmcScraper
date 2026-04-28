@@ -578,6 +578,10 @@ public class ArticleExtractor : IDisposable
                         i < 4 ? ConsoleColor.DarkYellow :
                                 ConsoleColor.Red;
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty");
+                    if (i >= 3)
+                    {
+                        Console.WriteLine($"Link: https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcId}/");
+                    }
                     Console.ForegroundColor = ConsoleColor.White;
                 }
                 if (!string.IsNullOrEmpty(result.Title))
