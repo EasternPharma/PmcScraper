@@ -28,7 +28,7 @@ public class ArticleExtractor : IDisposable
     #region Constructors Methods 
     public ArticleExtractor()
     {
-        DelayTime = 500;
+        DelayTime = 700;
     }
     public ArticleExtractor(int delayTime)
     {
@@ -582,6 +582,11 @@ public class ArticleExtractor : IDisposable
                     return result;
                 }
                 await Task.Delay(((i + 2) * DelayTime) + ((i + 1) * (DelayTime / 2)));
+                if (i > 2)
+                {
+                    int rnd = new Random().Next(DelayTime * 2, 5000);
+                    await Task.Delay(rnd);
+                }
             }
         }
         catch (Exception ex)
