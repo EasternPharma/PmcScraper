@@ -143,7 +143,7 @@ async Task<int> TestBatch(SeleniumHeaderDTO pmcHeaders, string currentEnvBase)
 
     if (ids.Count > 0)
     {
-        using var idBatchExtractor = new ArticleExtractor(delayTime: 300, pmcHeaders.Headers, pmcHeaders.Cookies);
+        using var idBatchExtractor = new ArticleExtractor(pmcHeaders.Headers, pmcHeaders.Cookies);
         var articles = await idBatchExtractor.ExtractDataFromIdsAsync(ids);
         Console.WriteLine($"Extracted {articles.Count} articles from {ids.Count} PMC IDs.");
 

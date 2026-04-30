@@ -22,23 +22,23 @@ public class ArticleExtractor : IDisposable
     private Dictionary<string, string>? _headers;
     private Dictionary<string, string>? _cookies;
     private HttpClient? _httpClient;
-    private int DelayTime;
+    //private int DelayTime;
     #endregion
 
     #region Constructors Methods 
     public ArticleExtractor()
     {
-        DelayTime = 700;
+        //DelayTime = 700;
     }
-    public ArticleExtractor(int delayTime)
+    //public ArticleExtractor(int delayTime)
+    //{
+
+    //    DelayTime = delayTime;
+    //}
+    public ArticleExtractor(Dictionary<string, string>? headers, Dictionary<string, string>? cookies)
     {
 
-        DelayTime = delayTime;
-    }
-    public ArticleExtractor(int delayTime, Dictionary<string, string>? headers, Dictionary<string, string>? cookies)
-    {
-
-        DelayTime = delayTime;
+        //DelayTime = delayTime;
         _headers = headers;
         _cookies = cookies;
     }
@@ -523,10 +523,12 @@ public class ArticleExtractor : IDisposable
     {
         ArticleDTO result = new ArticleDTO() { PmcId = pmcId };
 
+        await TicketManager.WaitForTicketAsync();
+
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("URL must not be null or empty.", nameof(url));
         if (_httpClient == null)
-            _httpClient = new HttpClient { Timeout = TimeSpan.FromMilliseconds(DelayTime * 10) };
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromMilliseconds(TicketManager.MaximumDelay) };
 
         int k = 7;
         try
@@ -560,14 +562,14 @@ public class ArticleExtractor : IDisposable
                 {
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}");
                     k++;
-                    await Task.Delay(2000);
+                    TicketManager.RecordResult(false);
                     continue;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}");
                     k++;
-                    await Task.Delay(2000);
+                    TicketManager.RecordResult(false);
                     continue;
                 }
                 result = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
@@ -577,7 +579,8 @@ public class ArticleExtractor : IDisposable
                         i < 2 ? ConsoleColor.Yellow :
                         i < 4 ? ConsoleColor.DarkYellow :
                                 ConsoleColor.Red;
-                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty");
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty\nDelay: {TicketManager._delay}");
+                    TicketManager.RecordResult(false);
                     if (i >= 3)
                     {
                         Console.WriteLine($"Link: https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcId}/");
@@ -586,14 +589,15 @@ public class ArticleExtractor : IDisposable
                 }
                 if (!string.IsNullOrEmpty(result.Title))
                 {
+                    TicketManager.RecordResult(true);
                     return result;
                 }
-                await Task.Delay(((i + 2) * DelayTime) + ((i + 1) * (DelayTime / 2)));
-                if (i > 1)
-                {
-                    int rnd = new Random().Next(DelayTime * i, DelayTime * Math.Max(10, i + 1));
-                    await Task.Delay(rnd);
-                }
+                //await Task.Delay(((i + 2) * DelayTime) + ((i + 1) * (DelayTime / 2)));
+                //if (i > 1)
+                //{
+                //    int rnd = new Random().Next(DelayTime * i, DelayTime * Math.Max(10, i + 1));
+                //    await Task.Delay(rnd);
+                //}
             }
         }
         catch (Exception ex)
@@ -623,10 +627,12 @@ public class ArticleExtractor : IDisposable
     {
         async Task<ArticleDTO?> RunStaggeredAsync(int id, int staggerIndex)
         {
-            int waitMs = DelayTime * staggerIndex;
-            if (staggerIndex > 5)
-                waitMs += (DelayTime * staggerIndex) / 2;
-            await Task.Delay(TimeSpan.FromMilliseconds(waitMs), cancellationToken).ConfigureAwait(false);
+            //int waitMs = DelayTime * staggerIndex;
+            //if (staggerIndex > 5)
+            //    waitMs += (DelayTime * staggerIndex) / 2;
+            //await Task.Delay(TimeSpan.FromMilliseconds(waitMs), cancellationToken).ConfigureAwait(false);
+            int delay = (int)Math.Floor(TicketManager._delay * 0.9);
+            await Task.Delay(delay);
             return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
         }
 
@@ -642,7 +648,7 @@ public class ArticleExtractor : IDisposable
                     ? article.Title.Substring(0, 49) + " ..."
                     : article.Title;
 
-            Console.WriteLine($"Extracted article: {title} (PMC{article.PmcId})");
+            Console.WriteLine($"Extracted article: {title} (PMC{article.PmcId}) \t - Delay: {TicketManager._delay}");
         }
 
         return articles;
