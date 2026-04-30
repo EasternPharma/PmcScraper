@@ -1,165 +1,193 @@
 ﻿namespace PmcScraper;
 
+/// <summary>
+/// Describes the outcome of a single PMC HTTP request.
+/// Each outcome carries a different pressure weight inside the PID controller.
+/// </summary>
+public enum RequestOutcome
+{
+    Success,        // article fetched and parsed correctly
+    EmptyResponse,  // HTML returned but title is missing — soft ban signal
+    Timeout,        // request timed out (TaskCanceledException)
+    HttpError,      // non-ban HTTP error (4xx / 5xx except 429)
+    HttpBan,        // HTTP 429 / confirmed rate-limit — triggers a hard pause
+    OtherError,     // any other failure
+}
+
+/// <summary>
+/// PID-based inter-request throttle.
+///
+/// The controller measures a rolling "pressure" signal built from weighted
+/// request outcomes, then drives <see cref="_delay"/> so that pressure
+/// converges to <see cref="TargetPressure"/>.
+///
+/// Separate asymmetric gains ensure the delay rises quickly on errors and
+/// descends conservatively once conditions improve.
+/// </summary>
 public static class TicketManager
 {
-    // ─── Base Configuration ──────────────────────────────────
-    public const int DefaultDelay = 500;    // ms — minimum interval between requests
-    public const int MaximumDelay = 5000;   // ms — maximum delay cap
-    private const int StepUp = 500;         // ms — delay increase on failure
-    private const int IterationPoll = 15;   // ms — polling frequency in wait loop
+    // ─── Delay Bounds ────────────────────────────────────────
+    public const int DefaultDelay = 700;   // ms — minimum inter-request gap
+    public const int MaximumDelay = 5000;  // ms — hard cap
+    private const int IterationPoll = 15;  // ms — polling granularity inside wait loop
 
-    // Recovery phase: used when _delay is above _best20Delay (returning from an error spike)
-    private const double RecoveryStepDownPct = 0.15; // 15% per step — fast return to known-good level
-    private const int RecoveryAfterSuccesses = 3;    // only 3 consecutive successes needed
-    // no hold-time guard during recovery — speed is safe because we're above the proven level
+    // ─── PID Tuning ──────────────────────────────────────────
+    /// <summary>Tolerate up to 8 % weighted error pressure before raising delay.</summary>
+    private const double TargetPressure = 0.08;
+    private const double Kp = 400.0;    // proportional — ms of change per unit of pressure error
+    private const double Ki = 15.0;     // integral     — corrects sustained deviation
+    private const double Kd = 200.0;    // derivative   — reacts to sudden pressure spikes
+    private const double IntegralClamp = 12.0;  // anti-windup guard
+    private const int WindowSize = 30;          // rolling pressure window (requests)
 
-    // Exploration phase: used when _delay is at or below _best20Delay (pushing toward minimum)
-    private const double ExploreStepDownPct = 0.04;  // 4% per step — cautious descent
-    private const int ExploreAfterSuccesses = 8;     // 8 consecutive successes needed
-    private const int ExploreHoldMs = 20_000;        // 20 s minimum between exploration steps
+    // ─── Outcome → Pressure Weights ──────────────────────────
+    // Indexed by (int)RequestOutcome; higher = more stress on the system.
+    private static readonly double[] PressureOf =
+    {
+        0.00,  // Success
+        0.50,  // EmptyResponse — soft signal (content gating)
+        0.85,  // Timeout       — connection stress
+        1.00,  // HttpError     — server rejected request
+        2.00,  // HttpBan       — confirmed rate-limit (also triggers pause)
+        0.60,  // OtherError
+    };
+
+    // ─── Pause Configuration ─────────────────────────────────
+    private const int BanPauseMs            = 60_000;  // 60 s on HTTP 429
+    private const int ErrorPauseMs          = 20_000;  // 20 s after N consecutive errors
+    private const int ConsecutiveErrorLimit = 5;       // consecutive failures that trigger soft pause
 
     // ─── State ──────────────────────────────────────────────
     private static readonly object _lock = new();
-    private static readonly Queue<bool> _last5 = new();
-    private static readonly Queue<bool> _last20 = new();
-    private static DateTime _lastTime = DateTime.MinValue;
-    public static int _delay = DefaultDelay * 2;
-    public static int _best20Delay = 0;
+    private static readonly Queue<double> _window = new();  // rolling pressure samples
 
-    private static int _successStreak = 0;
-    private static DateTime _lastDecreaseTime = DateTime.MinValue;
+    private static DateTime _lastTime     = DateTime.MinValue;
+    private static DateTime _pauseUntil   = DateTime.MinValue;
+    private static DateTime _lastPidTime  = DateTime.UtcNow;
 
-    // ─── Record Result of Each Request ───────────────────────
-    public static void RecordResult(bool success)
+    public static int _delay     = DefaultDelay * 2;
+    public static int _bestDelay = 0;  // lowest delay that sustained acceptable pressure
+
+    // PID internals
+    private static double _integral          = 0;
+    private static double _lastPressureError = 0;
+    private static int    _consecutiveErrors = 0;
+
+    // ─── Public API ──────────────────────────────────────────
+
+    public static void RecordOutcome(RequestOutcome outcome)
     {
         lock (_lock)
         {
-            Enqueue(_last5, success, 5);
-            Enqueue(_last20, success, 20);
+            double p = PressureOf[(int)outcome];
 
-            if (success)
-                _successStreak++;
+            _window.Enqueue(p);
+            if (_window.Count > WindowSize) _window.Dequeue();
+
+            if (outcome == RequestOutcome.Success)
+                _consecutiveErrors = 0;
             else
-                _successStreak = 0;
+                _consecutiveErrors++;
 
-            AdjustDelay();
+            double rolling = _window.Average();
+            RunPid(rolling);
+            ApplyPause(outcome);
+            UpdateBestDelay(rolling);
         }
     }
 
-    private static void Enqueue(Queue<bool> q, bool value, int maxSize)
+    /// <summary>Legacy shim — prefer <see cref="RecordOutcome"/>.</summary>
+    public static void RecordResult(bool success) =>
+        RecordOutcome(success ? RequestOutcome.Success : RequestOutcome.OtherError);
+
+    // ─── PID Controller ───────────────────────────────────────
+    private static void RunPid(double rollingPressure)
     {
-        q.Enqueue(value);
-        if (q.Count > maxSize) q.Dequeue();
+        var now = DateTime.UtcNow;
+        // Clamp dt so long pauses / idle gaps don't cause huge integral / derivative jumps
+        double dt = Math.Clamp((now - _lastPidTime).TotalSeconds, 0.05, 5.0);
+        _lastPidTime = now;
+
+        double error = rollingPressure - TargetPressure;
+
+        _integral          = Math.Clamp(_integral + error * dt, -IntegralClamp, IntegralClamp);
+        double derivative  = (error - _lastPressureError) / dt;
+        _lastPressureError = error;
+
+        double output = Kp * error + Ki * _integral + Kd * derivative;
+
+        // Asymmetric response: full speed up, 55 % speed down (conservative recovery)
+        int delta = output > 0
+            ? (int)Math.Round(output)
+            : (int)Math.Round(output * 0.55);
+
+        _delay = Math.Clamp(_delay + delta, DefaultDelay, MaximumDelay);
     }
 
-    public static void IncreaseDelayOneStep()
+    // ─── Pause Logic ─────────────────────────────────────────
+    private static void ApplyPause(RequestOutcome outcome)
     {
-        lock (_lock)
+        DateTime until;
+
+        if (outcome == RequestOutcome.HttpBan)
         {
-            _delay = Math.Min(_delay + StepUp, MaximumDelay);
-            _successStreak = 0;
+            until     = DateTime.UtcNow.AddMilliseconds(BanPauseMs);
+            _integral = IntegralClamp;  // keep delay high once the pause expires
         }
+        else if (_consecutiveErrors >= ConsecutiveErrorLimit)
+        {
+            until = DateTime.UtcNow.AddMilliseconds(ErrorPauseMs);
+        }
+        else return;
+
+        if (until > _pauseUntil)
+            _pauseUntil = until;
     }
 
-    // ─── Delay Adjustment Logic ───────────────────────────────
-    private static void AdjustDelay()
+    // ─── Best-Delay Tracker ───────────────────────────────────
+    private static void UpdateBestDelay(double rolling)
     {
-        // Require a full window of data before making any adjustment
-        if (_last5.Count < 5 || _last20.Count < 20) return;
+        // Only record when the full window is in and pressure is comfortably below target
+        if (_window.Count < WindowSize || rolling >= TargetPressure * 1.5) return;
 
-        double rate5 = _last5.Count(x => x) / (double)_last5.Count;
-        double rate20 = _last20.Count(x => x) / (double)_last20.Count;
-
-        if (_best20Delay == 0)
-            _best20Delay = DefaultDelay * 4;
-
-        // Track the fastest delay that achieved >95% success rate
-        if (rate20 > 0.95)
-        {
-            int diff = Math.Abs(_delay - _best20Delay);
-            if (diff < 100)
-                _best20Delay = Math.Min(_delay, _best20Delay);
-            else
-                _best20Delay = (int)Math.Floor((_delay + _best20Delay) / 2.0);
-        }
-
-        // Weighted score: recent 5 requests carry more weight
-        double combined = rate5 * 0.6 + rate20 * 0.4;
-
-        if (combined < 0.30)
-        {
-            // Over 70% failure — high pressure, back off quickly
-            _delay = Math.Min(_delay + StepUp * 3, MaximumDelay);
-            _successStreak = 0;
-        }
-        else if (combined < 0.60)
-        {
-            // 40–70% failure — back off moderately
-            _delay = Math.Min(_delay + StepUp, MaximumDelay);
-            _successStreak = 0;
-        }
-        else if (combined > 0.95)
-        {
-            bool inRecovery = _best20Delay > 0 && _delay > _best20Delay;
-
-            if (inRecovery)
-            {
-                // Above the known-good level — safe to return quickly; light cooldown only
-                if (_successStreak >= RecoveryAfterSuccesses)
-                {
-                    // Step 15% toward _best20Delay; never overshoot it
-                    int candidate = (int)Math.Round(_delay * (1.0 - RecoveryStepDownPct));
-                    _delay = Math.Max(candidate, _best20Delay);
-
-                    _successStreak = 0;
-                    _lastDecreaseTime = DateTime.UtcNow;
-                }
-            }
-            else
-            {
-                // At or below known-good level — explore cautiously with full cooldowns
-                bool streakReady = _successStreak >= ExploreAfterSuccesses;
-                bool holdReady = (DateTime.UtcNow - _lastDecreaseTime).TotalMilliseconds >= ExploreHoldMs;
-
-                if (streakReady && holdReady)
-                {
-                    int candidate = Math.Max((int)Math.Round(_delay * (1.0 - ExploreStepDownPct)), DefaultDelay);
-                    _delay = candidate;
-
-                    _successStreak = 0;
-                    _lastDecreaseTime = DateTime.UtcNow;
-                }
-            }
-        }
-        // Between 60–95% success — delay is stable, leave it unchanged
+        _bestDelay = _bestDelay == 0
+            ? _delay
+            : Math.Min(_bestDelay, _delay);
     }
 
-    // ─── Acquire Ticket Before Sending a Request ─────────────
+    // ─── Ticket Acquisition ───────────────────────────────────
     /// <summary>
-    /// Waits until enough time has passed since the last request,
-    /// then allows the next request to proceed.
+    /// Waits for any active pause to expire, then enforces the inter-request
+    /// spacing defined by <see cref="_delay"/> before granting a ticket.
     /// </summary>
     public static async Task WaitForTicketAsync(CancellationToken ct = default)
     {
+        // Phase 1 — honor any hard/soft pause
+        DateTime pauseUntil;
+        lock (_lock) { pauseUntil = _pauseUntil; }
+
+        int pauseMs = (int)(pauseUntil - DateTime.UtcNow).TotalMilliseconds;
+        if (pauseMs > 0)
+            await Task.Delay(pauseMs, ct);
+
+        // Phase 2 — normal inter-request spacing
         while (true)
         {
             ct.ThrowIfCancellationRequested();
 
             int currentDelay;
             DateTime lastTime;
-
             lock (_lock)
             {
                 currentDelay = _delay;
-                lastTime = _lastTime;
+                lastTime     = _lastTime;
             }
 
             var elapsed = (DateTime.UtcNow - lastTime).TotalMilliseconds;
-
             if (elapsed >= currentDelay)
             {
                 lock (_lock) { _lastTime = DateTime.UtcNow; }
-                return; // ticket granted
+                return;
             }
 
             var waitMs = (int)(currentDelay - elapsed) + 1;
@@ -167,14 +195,14 @@ public static class TicketManager
         }
     }
 
-    // ─── Current Status (for logging / debugging) ────────────
-    public static (int Delay, double Rate5, double Rate20) GetStatus()
+    // ─── Status ──────────────────────────────────────────────
+    public static (int Delay, int BestDelay, double Pressure, bool Paused) GetStatus()
     {
         lock (_lock)
         {
-            double r5 = _last5.Count > 0 ? _last5.Count(x => x) / (double)_last5.Count : 1.0;
-            double r20 = _last20.Count > 0 ? _last20.Count(x => x) / (double)_last20.Count : 1.0;
-            return (_delay, r5, r20);
+            double p    = _window.Count > 0 ? _window.Average() : 0.0;
+            bool paused = DateTime.UtcNow < _pauseUntil;
+            return (_delay, _bestDelay, p, paused);
         }
     }
 }

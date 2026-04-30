@@ -550,44 +550,58 @@ public class ArticleExtractor : IDisposable
                 try
                 {
                     var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [429 Ban]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
+                        Console.ForegroundColor = ConsoleColor.White;
+                        k++;
+                        TicketManager.RecordOutcome(RequestOutcome.HttpBan);
+                        continue;
+                    }
+
                     response.EnsureSuccessStatusCode();
                     var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                     doc.LoadHtml(html);
                 }
-                catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+                catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId} \t- Delay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [Timeout]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
                     k++;
-                    TicketManager.RecordResult(false);
+                    TicketManager.RecordOutcome(RequestOutcome.Timeout);
                     continue;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
-                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId} \t- Delay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [HttpError]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
                     k++;
-                    TicketManager.RecordResult(false);
+                    TicketManager.RecordOutcome(RequestOutcome.HttpError);
+                    continue;
+                }
+                catch (Exception)
+                {
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [Error]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
+                    k++;
+                    TicketManager.RecordOutcome(RequestOutcome.OtherError);
                     continue;
                 }
                 result = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(result.Title))
                 {
-                    
                     Console.ForegroundColor =
                         i < 2 ? ConsoleColor.Yellow :
                         i < 4 ? ConsoleColor.DarkYellow :
                                 ConsoleColor.Red;
-                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty\t- Delay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
-                    TicketManager.IncreaseDelayOneStep();
-                    TicketManager.RecordResult(false);
-                    if (i >= 3)
-                    {
-                        Console.WriteLine($"Link: https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcId}/");
-                    }
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [Empty]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
                     Console.ForegroundColor = ConsoleColor.White;
+                    TicketManager.RecordOutcome(RequestOutcome.EmptyResponse);
+                    if (i >= 3)
+                        Console.WriteLine($"Link: https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcId}/");
                 }
                 if (!string.IsNullOrEmpty(result.Title))
                 {
-                    TicketManager.RecordResult(true);
+                    TicketManager.RecordOutcome(RequestOutcome.Success);
                     return result;
                 }
                 //await Task.Delay(((i + 2) * DelayTime) + ((i + 1) * (DelayTime / 2)));
@@ -646,7 +660,7 @@ public class ArticleExtractor : IDisposable
                     ? article.Title.Substring(0, 49) + " ..."
                     : article.Title;
 
-            Console.WriteLine($"{title} (PMC{article.PmcId}) \tDelay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
+            Console.WriteLine($"{title} (PMC{article.PmcId}) \tDelay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
         }
         return articles;
     }
