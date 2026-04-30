@@ -46,9 +46,20 @@ public static class TicketManager
         // Track the fastest delay that achieved >95% success rate
         if (rate20 > 0.95)
         {
-            _best20Delay = _best20Delay == 0
-                ? DefaultDelay * 4
-                : Math.Min(_delay, _best20Delay);
+            if (_best20Delay == 0)
+            {
+                _best20Delay = DefaultDelay * 4;
+            }
+            {
+                int diff = Math.Abs(_delay - _best20Delay);
+                if (diff < 150)
+                {
+                    _best20Delay = Math.Min(_delay, _best20Delay);
+                }
+                else {
+                    _best20Delay = (int) Math.Floor((_delay + _best20Delay) / 2.0);
+                }
+            }
         }
 
         // Weighted score: recent 5 requests carry more weight
