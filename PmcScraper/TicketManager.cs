@@ -28,7 +28,7 @@ public static class TicketManager
 {
     // ─── Delay Bounds ────────────────────────────────────────
     public const int DefaultDelay = 700;   // ms — minimum inter-request gap
-    public const int MaximumDelay = 5000;  // ms — hard cap
+    public const int MaximumDelay = 2500;  // ms — hard cap
     private const int IterationPoll = 15;  // ms — polling granularity inside wait loop
 
     // ─── PID Tuning ──────────────────────────────────────────
