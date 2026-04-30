@@ -34,6 +34,11 @@ public static class TicketManager
         if (q.Count > maxSize) q.Dequeue();
     }
 
+    public static void IncreaseDelayOneStep()
+    {
+        _delay = Math.Min(_delay + StepUp, MaximumDelay);
+    }
+
     // ─── Delay Adjustment Logic ───────────────────────────────
     private static void AdjustDelay()
     {
@@ -42,23 +47,23 @@ public static class TicketManager
 
         double rate5 = _last5.Count > 0 ? _last5.Count(x => x) / (double)_last5.Count : 1.0;
         double rate20 = _last20.Count > 0 ? _last20.Count(x => x) / (double)_last20.Count : 1.0;
+        if (_best20Delay == 0)
+        {
+            _best20Delay = DefaultDelay * 4;
+        }
+
 
         // Track the fastest delay that achieved >95% success rate
         if (rate20 > 0.95)
         {
-            if (_best20Delay == 0)
+            int diff = Math.Abs(_delay - _best20Delay);
+            if (diff < 100)
             {
-                _best20Delay = DefaultDelay * 4;
+                _best20Delay = Math.Min(_delay, _best20Delay);
             }
+            else
             {
-                int diff = Math.Abs(_delay - _best20Delay);
-                if (diff < 150)
-                {
-                    _best20Delay = Math.Min(_delay, _best20Delay);
-                }
-                else {
-                    _best20Delay = (int) Math.Floor((_delay + _best20Delay) / 2.0);
-                }
+                _best20Delay = (int)Math.Floor((_delay + _best20Delay) / 2.0);
             }
         }
 

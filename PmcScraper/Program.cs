@@ -21,6 +21,8 @@ if (!bases.ContainsKey(envBase))
 
 Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\n");
 
+Console.WriteLine($"Delay: {TicketManager._delay}");
+
 // Fetch cookies and a plausible User-Agent from PMC without any browser dependency.
 // This replaces the old Selenium test_browser(); HttpClient works on any OS / container.
 async Task<SeleniumHeaderDTO> FetchPmcHeadersAsync()

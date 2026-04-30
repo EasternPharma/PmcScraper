@@ -571,11 +571,13 @@ public class ArticleExtractor : IDisposable
                 result = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(result.Title))
                 {
+                    
                     Console.ForegroundColor =
                         i < 2 ? ConsoleColor.Yellow :
                         i < 4 ? ConsoleColor.DarkYellow :
                                 ConsoleColor.Red;
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty\t- Delay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
+                    TicketManager.IncreaseDelayOneStep();
                     TicketManager.RecordResult(false);
                     if (i >= 3)
                     {
@@ -646,7 +648,6 @@ public class ArticleExtractor : IDisposable
 
             Console.WriteLine($"{title} (PMC{article.PmcId}) \tDelay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
         }
-
         return articles;
     }
     #endregion
