@@ -1,11 +1,7 @@
 ﻿using HtmlAgilityPack;
 using Newtonsoft.Json;
 using PmcScraper.DTOs;
-using System.Net.Http.Json;
 using System.Text;
-using System.Text.Json.Serialization;
-using System.Xml;
-using static System.Net.Mime.MediaTypeNames;
 
 namespace PmcScraper;
 
@@ -560,14 +556,14 @@ public class ArticleExtractor : IDisposable
                 }
                 catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
                 {
-                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}");
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId} \t- Delay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
                     k++;
                     TicketManager.RecordResult(false);
                     continue;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
-                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}");
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId} \t- Delay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
                     k++;
                     TicketManager.RecordResult(false);
                     continue;
@@ -579,7 +575,7 @@ public class ArticleExtractor : IDisposable
                         i < 2 ? ConsoleColor.Yellow :
                         i < 4 ? ConsoleColor.DarkYellow :
                                 ConsoleColor.Red;
-                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty\nDelay: {TicketManager._delay}");
+                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t Title is empty\t- Delay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
                     TicketManager.RecordResult(false);
                     if (i >= 3)
                     {
@@ -648,7 +644,7 @@ public class ArticleExtractor : IDisposable
                     ? article.Title.Substring(0, 49) + " ..."
                     : article.Title;
 
-            Console.WriteLine($"Extracted article: {title} (PMC{article.PmcId}) \t - Delay: {TicketManager._delay}");
+            Console.WriteLine($"{title} (PMC{article.PmcId}) \tDelay: {TicketManager._delay} - Best20: {TicketManager._best20Delay}");
         }
 
         return articles;

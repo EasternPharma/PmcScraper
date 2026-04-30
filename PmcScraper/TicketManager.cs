@@ -1,26 +1,21 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace PmcScraper;
+﻿namespace PmcScraper;
 
 public static class TicketManager
 {
     // ─── Base Configuration ──────────────────────────────────
-    public const int DefaultDelay = 300;   // ms — minimum interval between requests
-    public const int MaximumDelay = 5000;  // ms — maximum delay cap
-    private const int StepUp = 500;   // ms — delay increase amount on failure
-    private const int StepDown = 100;   // ms — delay decrease amount on success
-    private const int IterationPoll = 15;    // ms — polling frequency in wait loop
+    public const int DefaultDelay = 500;    // ms — minimum interval between requests
+    public const int MaximumDelay = 5000;   // ms — maximum delay cap
+    private const int StepUp = 500;    // ms — delay increase amount on failure
+    private const int StepDown = 100;    // ms — delay decrease amount on success
+    private const int IterationPoll = 15;   // ms — polling frequency in wait loop
 
     // ─── State ──────────────────────────────────────────────
     private static readonly object _lock = new();
     private static readonly Queue<bool> _last5 = new();
     private static readonly Queue<bool> _last20 = new();
     private static DateTime _lastTime = DateTime.MinValue;
-    public static int _delay = DefaultDelay;
+    public static int _delay = DefaultDelay * 2;
+    public static int _best20Delay = 0;
 
     // ─── Record Result of Each Request ───────────────────────
     public static void RecordResult(bool success)
@@ -48,6 +43,14 @@ public static class TicketManager
         double rate5 = _last5.Count > 0 ? _last5.Count(x => x) / (double)_last5.Count : 1.0;
         double rate20 = _last20.Count > 0 ? _last20.Count(x => x) / (double)_last20.Count : 1.0;
 
+        // Track the fastest delay that achieved >95% success rate
+        if (rate20 > 0.95)
+        {
+            _best20Delay = _best20Delay == 0
+                ? DefaultDelay * 4
+                : Math.Min(_delay, _best20Delay);
+        }
+
         // Weighted score: recent 5 requests carry more weight
         double combined = rate5 * 0.6 + rate20 * 0.4;
 
@@ -64,7 +67,18 @@ public static class TicketManager
         else if (combined > 0.90)
         {
             // Over 90% success — safe to speed up slightly
-            _delay = Math.Max(_delay - StepDown, DefaultDelay);
+            int candidate = Math.Max(_delay - StepDown, DefaultDelay);
+
+            if (_best20Delay > 0 && candidate < _best20Delay && Math.Abs(_best20Delay - candidate) > StepDown)
+            {
+                // Snap toward best known delay instead of going below it
+                _delay = (int)(_best20Delay - Math.Floor(StepDown / 4.0));
+            }
+            else
+            {
+                // Normal step down
+                _delay = candidate;
+            }
         }
         // Between 60–90% success — delay is stable, leave it unchanged
     }
