@@ -37,11 +37,16 @@ async Task<SeleniumHeaderDTO> FetchPmcHeadersAsync()
         UseCookies = true,
     };
     using var http = new HttpClient(handler);
-
-    const string userAgent =
+    
+    List<string> userAgents = new List<string>();
+    userAgents.Add("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)");
+    userAgents.Add("Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)");
+    string userAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/124.0.0.0 Safari/537.36";
+
+    userAgent = userAgents[new Random().Next(0, userAgents.Count)];
 
     http.DefaultRequestHeaders.Add("User-Agent", userAgent);
     http.DefaultRequestHeaders.Add("Accept",
