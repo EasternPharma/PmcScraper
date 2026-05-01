@@ -18,23 +18,33 @@ public class ArticleExtractor : IDisposable
     private Dictionary<string, string>? _headers;
     private Dictionary<string, string>? _cookies;
     private HttpClient? _httpClient;
-    //private int DelayTime;
+    #endregion
+
+    #region Static Initializer — Real-time Console
+    static ArticleExtractor()
+    {
+        // Ensure stdout and stderr are flushed after every write so logs appear
+        // immediately in Google Colab, Docker, and other piped environments.
+        if (Console.Out is not System.IO.StreamWriter { AutoFlush: true })
+        {
+            var stdout = new System.IO.StreamWriter(Console.OpenStandardOutput(), Console.OutputEncoding) { AutoFlush = true };
+            Console.SetOut(stdout);
+        }
+        if (Console.Error is not System.IO.StreamWriter { AutoFlush: true })
+        {
+            var stderr = new System.IO.StreamWriter(Console.OpenStandardError(), Console.OutputEncoding) { AutoFlush = true };
+            Console.SetError(stderr);
+        }
+    }
     #endregion
 
     #region Constructors Methods 
     public ArticleExtractor()
     {
-        //DelayTime = 700;
     }
-    //public ArticleExtractor(int delayTime)
-    //{
 
-    //    DelayTime = delayTime;
-    //}
     public ArticleExtractor(Dictionary<string, string>? headers, Dictionary<string, string>? cookies)
     {
-
-        //DelayTime = delayTime;
         _headers = headers;
         _cookies = cookies;
     }
@@ -135,7 +145,7 @@ public class ArticleExtractor : IDisposable
     private List<string>? GetAuthors(HtmlDocument doc)
     {
         var authorNodes = doc.DocumentNode.SelectNodes($"//meta[@name='{_XPathMap[XPath.Author]}']");
-        if (authorNodes != null && authorNodes.Count() > 0)
+        if (authorNodes != null && authorNodes.Count > 0)
         {
             var authors = new List<string>();
             foreach (var node in authorNodes)
@@ -155,7 +165,7 @@ public class ArticleExtractor : IDisposable
     /// Prints a labeled metadata field to the console:
     /// the caption in yellow and the value in white.
     /// </summary>
-    private void PrintMeta(string caption, string? data)
+    private static void PrintMeta(string caption, string? data)
     {
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.Write($"{caption}:\t");
@@ -275,7 +285,7 @@ public class ArticleExtractor : IDisposable
     /// under the nearest preceding header. Recurses one level into child sections;
     /// at <c>depth 0</c>, skips <c>abstract</c> and <c>ref-list</c> sections.
     /// </summary>
-    private SectionExtractionResult ExtractSectionsFromNodes(HtmlNodeCollection nodes, int depth = 0, short _sectionCount = 1, string? fileName = null)
+    private SectionExtractionResult ExtractSectionsFromNodes(HtmlNodeCollection nodes, int depth = 0, short _sectionCount = 1)
     {
         var sections = new Dictionary<string, string>();
         var header = new StringBuilder();
@@ -357,7 +367,7 @@ public class ArticleExtractor : IDisposable
     /// delegates section extraction to <see cref="ExtractSectionsFromNodes"/>.
     /// Returns <c>null</c> if the body node is not found.
     /// </summary>
-    private Dictionary<string, string>? ExtractSections(HtmlDocument doc, string? fileName = null)
+    private Dictionary<string, string>? ExtractSections(HtmlDocument doc)
     {
         var bodyNode = doc.DocumentNode.SelectSingleNode(_XPathMap[XPath.Section]);
         if (bodyNode == null)
@@ -517,28 +527,28 @@ public class ArticleExtractor : IDisposable
     #region Extract Data From URL
     public async Task<ArticleDTO> ExtractDataFromUrlAsync(int pmcId, string url, CancellationToken cancellationToken = default)
     {
-        ArticleDTO result = new ArticleDTO() { PmcId = pmcId };
-
-        await TicketManager.WaitForTicketAsync();
-
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("URL must not be null or empty.", nameof(url));
+
+        ArticleDTO result = new ArticleDTO() { PmcId = pmcId };
+
         if (_httpClient == null)
-            _httpClient = new HttpClient { Timeout = TimeSpan.FromMilliseconds(TicketManager.MaximumDelay) };
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
 
         int k = 7;
         try
         {
             for (int i = 0; i < k && k < 15; i++)
             {
+                // Each attempt (including retries) must wait for a ticket.
+                await TicketManager.WaitForTicketAsync(cancellationToken).ConfigureAwait(false);
+
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
 
                 if (_headers != null && _headers.Count > 0)
                 {
                     foreach (var header in _headers)
-                    {
                         request.Headers.Add(header.Key, header.Value);
-                    }
                 }
                 if (_cookies != null && _cookies.Count > 0)
                 {
@@ -565,6 +575,11 @@ public class ArticleExtractor : IDisposable
                     var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                     doc.LoadHtml(html);
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Propagate real cancellation — do not retry.
+                    throw;
+                }
                 catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [Timeout]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
@@ -572,7 +587,7 @@ public class ArticleExtractor : IDisposable
                     TicketManager.RecordOutcome(RequestOutcome.Timeout);
                     continue;
                 }
-                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+                catch (HttpRequestException)
                 {
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [HttpError]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
                     k++;
@@ -604,13 +619,11 @@ public class ArticleExtractor : IDisposable
                     TicketManager.RecordOutcome(RequestOutcome.Success);
                     return result;
                 }
-                //await Task.Delay(((i + 2) * DelayTime) + ((i + 1) * (DelayTime / 2)));
-                //if (i > 1)
-                //{
-                //    int rnd = new Random().Next(DelayTime * i, DelayTime * Math.Max(10, i + 1));
-                //    await Task.Delay(rnd);
-                //}
             }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -628,7 +641,7 @@ public class ArticleExtractor : IDisposable
 
     public async Task<ArticleDTO?> ExtractDataFromIdAsync(int pmcId, CancellationToken cancellationToken = default)
     {
-        string url = $"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcId}/";
+        string url = $"https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcId}/";
         return await ExtractDataFromUrlAsync(pmcId, url, cancellationToken).ConfigureAwait(false);
     }
     #endregion
@@ -639,12 +652,10 @@ public class ArticleExtractor : IDisposable
     {
         async Task<ArticleDTO?> RunStaggeredAsync(int id, int staggerIndex)
         {
-            //int waitMs = DelayTime * staggerIndex;
-            //if (staggerIndex > 5)
-            //    waitMs += (DelayTime * staggerIndex) / 2;
-            //await Task.Delay(TimeSpan.FromMilliseconds(waitMs), cancellationToken).ConfigureAwait(false);
-            int delay = (int)Math.Floor(TicketManager._delay * 0.9);
-            await Task.Delay(delay);
+            // stagger each task so they don't all hit WaitForTicketAsync at the same moment
+            int staggerMs = staggerIndex * TicketManager._delay;
+            if (staggerMs > 0)
+                await Task.Delay(staggerMs, cancellationToken).ConfigureAwait(false);
             return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
         }
 
@@ -688,6 +699,8 @@ public class ArticleExtractor : IDisposable
         {
             if (disposing)
             {
+                _httpClient?.Dispose();
+                _httpClient = null;
             }
             disposedValue = true;
         }

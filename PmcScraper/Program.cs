@@ -38,15 +38,13 @@ async Task<SeleniumHeaderDTO> FetchPmcHeadersAsync()
     };
     using var http = new HttpClient(handler);
     
-    List<string> userAgents = new List<string>();
-    userAgents.Add("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)");
-    userAgents.Add("Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)");
-    string userAgent =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/124.0.0.0 Safari/537.36";
-
-    userAgent = userAgents[new Random().Next(0, userAgents.Count)];
+    List<string> userAgents = new List<string>
+    {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    };
+    string userAgent = userAgents[new Random().Next(0, userAgents.Count)];
 
     http.DefaultRequestHeaders.Add("User-Agent", userAgent);
     http.DefaultRequestHeaders.Add("Accept",
@@ -154,10 +152,14 @@ async Task<int> TestBatch(SeleniumHeaderDTO pmcHeaders, string currentEnvBase)
         var articles = await idBatchExtractor.ExtractDataFromIdsAsync(ids);
         Console.WriteLine($"Extracted {articles.Count} articles from {ids.Count} PMC IDs.");
 
-        var scrapedIds = articles.Select(a => a.PmcId).ToHashSet();
-        var successDict = scrapedIds.ToDictionary(id => id, _ => true);
+        // Only count an article as successful when we actually got its title.
+        var successIds = articles
+            .Where(a => !string.IsNullOrEmpty(a.Title))
+            .Select(a => a.PmcId)
+            .ToHashSet();
+        var successDict = successIds.ToDictionary(id => id, _ => true);
         var errorDict = ids
-            .Where(id => !scrapedIds.Contains(id))
+            .Where(id => !successIds.Contains(id))
             .ToDictionary(id => id, _ => "Extraction failed");
         var fullTextIds = articles
             .Where(x => x.Sections != null && x.Sections.Count > 0)

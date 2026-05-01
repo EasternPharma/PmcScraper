@@ -162,35 +162,36 @@ public static class TicketManager
     /// </summary>
     public static async Task WaitForTicketAsync(CancellationToken ct = default)
     {
-        // Phase 1 — honor any hard/soft pause
-        DateTime pauseUntil;
-        lock (_lock) { pauseUntil = _pauseUntil; }
+        // Phase 1 — honor any hard/soft pause (re-check after each sleep so that
+        // a ban extension set by another concurrent task is not missed).
+        while (true)
+        {
+            DateTime pauseUntil;
+            lock (_lock) { pauseUntil = _pauseUntil; }
 
-        int pauseMs = (int)(pauseUntil - DateTime.UtcNow).TotalMilliseconds;
-        if (pauseMs > 0)
-            await Task.Delay(pauseMs, ct);
+            int pauseMs = (int)(pauseUntil - DateTime.UtcNow).TotalMilliseconds;
+            if (pauseMs <= 0) break;
+
+            await Task.Delay(pauseMs, ct).ConfigureAwait(false);
+        }
 
         // Phase 2 — normal inter-request spacing
         while (true)
         {
             ct.ThrowIfCancellationRequested();
 
-            int currentDelay;
-            DateTime lastTime;
+            int waitMs;
             lock (_lock)
             {
-                currentDelay = _delay;
-                lastTime     = _lastTime;
+                var elapsed = (DateTime.UtcNow - _lastTime).TotalMilliseconds;
+                if (elapsed >= _delay)
+                {
+                    _lastTime = DateTime.UtcNow;
+                    return;
+                }
+                waitMs = (int)(_delay - elapsed) + 1;
             }
 
-            var elapsed = (DateTime.UtcNow - lastTime).TotalMilliseconds;
-            if (elapsed >= currentDelay)
-            {
-                lock (_lock) { _lastTime = DateTime.UtcNow; }
-                return;
-            }
-
-            var waitMs = (int)(currentDelay - elapsed) + 1;
             await Task.Delay(Math.Min(waitMs, IterationPoll), ct);
         }
     }
