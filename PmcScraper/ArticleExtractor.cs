@@ -340,8 +340,9 @@ public class ArticleExtractor : IDisposable
                 Flush();
                 SectionExtractionResult extractResult = ExtractSectionsFromNodes(node.ChildNodes, 1, _sectionCount);
                 _sectionCount = extractResult.SectionCount;
-                foreach (var kvp in extractResult.Sections)
-                    sections[kvp.Key] = kvp.Value;
+                if (extractResult.Sections != null)
+                    foreach (var kvp in extractResult.Sections)
+                        sections[kvp.Key] = kvp.Value;
             }
             else
             {
@@ -383,8 +384,9 @@ public class ArticleExtractor : IDisposable
         }
 
         var extractResult = ExtractSectionsFromNodes(childNodes, 0);
-        foreach (var kvp in extractResult.Sections)
-            sections[kvp.Key] = kvp.Value;
+        if (extractResult.Sections != null)
+            foreach (var kvp in extractResult.Sections)
+                sections[kvp.Key] = kvp.Value;
 
         return sections;
     }

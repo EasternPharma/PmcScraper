@@ -82,6 +82,7 @@ async Task<SeleniumHeaderDTO> FetchPmcHeadersAsync()
     return dto;
 }
 
+#pragma warning disable CS8321
 async Task TestFromFilesAsync()
 {
     string dirPath = @"E:\pmc_txt";
@@ -131,6 +132,7 @@ async Task TestFromUrlAsync()
         Console.ResetColor();
     }
 }
+#pragma warning restore CS8321
 
 //await TestFromUrlAsync();
 //await TestFromFilesAsync();
