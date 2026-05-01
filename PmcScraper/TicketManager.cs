@@ -27,8 +27,8 @@ public enum RequestOutcome
 public static class TicketManager
 {
     // ─── Delay Bounds ────────────────────────────────────────
-    public const int DefaultDelay = 700;   // ms — minimum inter-request gap
-    public const int MaximumDelay = 2000;  // ms — hard cap
+    public const int DefaultDelay = 900;   // ms — minimum inter-request gap
+    public const int MaximumDelay = 2200;  // ms — hard cap
     private const int IterationPoll = 15;  // ms — polling granularity inside wait loop
 
     // ─── PID Tuning ──────────────────────────────────────────

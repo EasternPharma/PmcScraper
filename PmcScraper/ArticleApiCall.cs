@@ -23,7 +23,9 @@ public sealed class ArticleApiCall : IDisposable
     public ArticleApiCall(string apiBaseUrl)
     {
         var baseUri = apiBaseUrl.TrimEnd('/') + "/";
-        _httpClient = new HttpClient { BaseAddress = new Uri(baseUri), Timeout = TimeSpan.FromSeconds(5) };
+        // 5s was way too aggressive for cross-region calls (e.g. Colab US → IR backend),
+        // causing constant timeouts and retry storms. 60s is a safer ceiling.
+        _httpClient = new HttpClient { BaseAddress = new Uri(baseUri), Timeout = TimeSpan.FromSeconds(60) };
         _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("app-sec", "bregulator");
     }
 
@@ -151,6 +153,14 @@ public sealed class ArticleApiCall : IDisposable
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 lastException = ex;
+                // Exponential backoff with jitter: 0.5s, 1s, 2s, 4s. Avoids hammering
+                // a sleeping/overloaded backend with 5 requests in a row.
+                if (attempt < MaxRetries - 1)
+                {
+                    int delayMs = 500 * (int)Math.Pow(2, attempt) + Random.Shared.Next(0, 250);
+                    try { await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { throw; }
+                }
             }
         }
         throw lastException!;

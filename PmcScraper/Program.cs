@@ -23,62 +23,117 @@ Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\n");
 
 Console.WriteLine($"Delay: {TicketManager._delay}");
 
-// Fetch cookies and a plausible User-Agent from PMC without any browser dependency.
-// This replaces the old Selenium test_browser(); HttpClient works on any OS / container.
+// Pool a single handler so that repeated FetchPmcHeadersAsync calls do not exhaust
+// ephemeral sockets on Google Colab (the previous code created a new handler per
+// iteration which leads to TIME_WAIT pile-up and SocketException after a few hundred runs).
+// CookieContainer is fixed for the lifetime of the handler — HttpClientHandler forbids
+// reassigning it after the first request. We clear it at the start of each warmup instead.
+var sharedCookieContainer = new CookieContainer();
+var sharedHeaderHandler = new HttpClientHandler
+{
+    AutomaticDecompression   = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
+    AllowAutoRedirect        = true,
+    UseCookies               = true,
+    CookieContainer          = sharedCookieContainer,
+    MaxAutomaticRedirections = 10,
+};
+
+List<string> userAgentPool = new List<string>
+{
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+};
+var userAgentRandom = new Random();
+
+// Warms up against PMC to harvest fresh anti-bot cookies (incap_ses_*, _abck, bm_sz, etc.)
+// and returns the header set the scraper should reuse for its article requests.
 async Task<SeleniumHeaderDTO> FetchPmcHeadersAsync()
 {
     var dto = new SeleniumHeaderDTO();
 
-    var cookieContainer = new CookieContainer();
-    using var handler = new HttpClientHandler
-    {
-        CookieContainer = cookieContainer,
-        AllowAutoRedirect = true,
-        UseCookies = true,
-    };
-    using var http = new HttpClient(handler);
-    
-    List<string> userAgents = new List<string>
-    {
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    };
-    string userAgent = userAgents[new Random().Next(0, userAgents.Count)];
+    // Reset the shared cookie jar in-place (we cannot reassign CookieContainer after
+    // the handler has sent its first request — that throws InvalidOperationException).
+    var cookieContainer = sharedCookieContainer;
+    foreach (Cookie c in cookieContainer.GetAllCookies())
+        c.Expired = true;
 
-    http.DefaultRequestHeaders.Add("User-Agent", userAgent);
-    http.DefaultRequestHeaders.Add("Accept",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
-    http.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
+    // The handler is shared but a per-call HttpClient is cheap; do NOT dispose it
+    // (disposing it would dispose the shared handler too).
+    var http = new HttpClient(sharedHeaderHandler, disposeHandler: false)
+    {
+        Timeout = TimeSpan.FromSeconds(30),
+    };
 
-    const string pmcHome = "https://pmc.ncbi.nlm.nih.gov/";
+    string userAgent = userAgentPool[userAgentRandom.Next(0, userAgentPool.Count)];
+
+    void AddBrowserHeaders(HttpRequestMessage req, string? referer)
+    {
+        req.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+        req.Headers.TryAddWithoutValidation("Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
+        req.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+        req.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br");
+        req.Headers.TryAddWithoutValidation("Upgrade-Insecure-Requests", "1");
+        req.Headers.TryAddWithoutValidation("DNT", "1");
+        req.Headers.TryAddWithoutValidation("Connection", "keep-alive");
+        req.Headers.TryAddWithoutValidation("sec-ch-ua",
+            "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"");
+        req.Headers.TryAddWithoutValidation("sec-ch-ua-mobile", "?0");
+        req.Headers.TryAddWithoutValidation("sec-ch-ua-platform", "\"Windows\"");
+        req.Headers.TryAddWithoutValidation("Sec-Fetch-Site", referer == null ? "none" : "same-origin");
+        req.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "navigate");
+        req.Headers.TryAddWithoutValidation("Sec-Fetch-User", "?1");
+        req.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "document");
+        if (referer != null)
+            req.Headers.TryAddWithoutValidation("Referer", referer);
+    }
+
+    const string pmcHome   = "https://pmc.ncbi.nlm.nih.gov/";
+    const string pmcSearch = "https://pmc.ncbi.nlm.nih.gov/?term=cancer";
     Console.WriteLine($"Fetching PMC headers from {pmcHome} ...");
 
-    HttpResponseMessage response;
     try
     {
-        response = await http.GetAsync(pmcHome);
+        // First hit: home page (Sec-Fetch-Site: none, like a typed URL)
+        using (var req1 = new HttpRequestMessage(HttpMethod.Get, pmcHome))
+        {
+            AddBrowserHeaders(req1, referer: null);
+            using var resp1 = await http.SendAsync(req1, HttpCompletionOption.ResponseHeadersRead);
+            Console.WriteLine($"PMC home responded: {(int)resp1.StatusCode} {resp1.ReasonPhrase}");
+            // Drain body so the connection can be reused
+            _ = await resp1.Content.ReadAsByteArrayAsync();
+        }
+
+        // Second hit: a search-like URL with home as Referer; this triggers PMC to
+        // upgrade the cookie jar (anti-bot tokens often only land on the second request).
+        using (var req2 = new HttpRequestMessage(HttpMethod.Get, pmcSearch))
+        {
+            AddBrowserHeaders(req2, referer: pmcHome);
+            using var resp2 = await http.SendAsync(req2, HttpCompletionOption.ResponseHeadersRead);
+            Console.WriteLine($"PMC search responded: {(int)resp2.StatusCode} {resp2.ReasonPhrase}");
+            _ = await resp2.Content.ReadAsByteArrayAsync();
+        }
     }
     catch (Exception ex)
     {
         Console.ForegroundColor = ConsoleColor.Red;
-        Console.Error.WriteLine($"[FATAL] Could not reach {pmcHome}: {ex.Message}");
+        Console.Error.WriteLine($"[WARN] PMC warmup failed: {ex.Message} — proceeding with whatever cookies we got.");
         Console.ResetColor();
-        throw;
     }
 
-    Console.WriteLine($"PMC responded: {(int)response.StatusCode} {response.ReasonPhrase}");
-
-    // Collect all cookies set by PMC (including after redirects).
     foreach (Cookie c in cookieContainer.GetAllCookies())
-        dto.Cookies.TryAdd(c.Name, c.Value);
+        dto.Cookies[c.Name] = c.Value;
 
-    dto.Headers["User-Agent"] = userAgent;
-    dto.Headers["Accept"] =
+    // The headers the scraper will replay on every article fetch. ApplyBrowserHeaders
+    // in ArticleExtractor adds the rest (Sec-Fetch-*, sec-ch-ua, Referer, Encoding).
+    dto.Headers["User-Agent"]      = userAgent;
+    dto.Headers["Accept"]          =
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
     dto.Headers["Accept-Language"] = "en-US,en;q=0.9";
-    dto.Headers["Cache-Control"] = "max-age=0";
+    dto.Headers["Cache-Control"]   = "max-age=0";
 
+    Console.WriteLine($"Harvested {dto.Cookies.Count} cookies from PMC.");
     return dto;
 }
 
@@ -152,17 +207,17 @@ async Task<int> TestBatch(SeleniumHeaderDTO pmcHeaders, string currentEnvBase)
     {
         using var idBatchExtractor = new ArticleExtractor(pmcHeaders.Headers, pmcHeaders.Cookies);
         var articles = await idBatchExtractor.ExtractDataFromIdsAsync(ids);
-        Console.WriteLine($"Extracted {articles.Count} articles from {ids.Count} PMC IDs.");
 
-        // Only count an article as successful when we actually got its title.
-        var successIds = articles
-            .Where(a => !string.IsNullOrEmpty(a.Title))
-            .Select(a => a.PmcId)
-            .ToHashSet();
+        // Articles returned by the extractor are guaranteed to have a Title now
+        // (failed fetches return null and are filtered out). Anything in `ids` that
+        // is not in this list is considered failed and goes into errorDict.
+        var successIds  = articles.Select(a => a.PmcId).ToHashSet();
         var successDict = successIds.ToDictionary(id => id, _ => true);
-        var errorDict = ids
+        var errorDict   = ids
             .Where(id => !successIds.Contains(id))
             .ToDictionary(id => id, _ => "Extraction failed");
+
+        Console.WriteLine($"Extracted {articles.Count} / {ids.Count} (errors: {errorDict.Count})");
         var fullTextIds = articles
             .Where(x => x.Sections != null && x.Sections.Count > 0)
             .Select(y => y.PmcId)

@@ -1,6 +1,7 @@
 ﻿using HtmlAgilityPack;
 using Newtonsoft.Json;
 using PmcScraper.DTOs;
+using System.Net;
 using System.Text;
 
 namespace PmcScraper;
@@ -18,6 +19,12 @@ public class ArticleExtractor : IDisposable
     private Dictionary<string, string>? _headers;
     private Dictionary<string, string>? _cookies;
     private HttpClient? _httpClient;
+    private HttpClientHandler? _httpHandler;
+    private CookieContainer? _cookieContainer;
+
+    // Limits how many PMC fetches run truly in parallel. PMC tolerates 2-3 concurrent
+    // requests per IP comfortably; more triggers soft bans / empty HTML.
+    private static readonly SemaphoreSlim _concurrencyGate = new SemaphoreSlim(3, 3);
     #endregion
 
     #region Static Initializer — Real-time Console
@@ -527,99 +534,168 @@ public class ArticleExtractor : IDisposable
     #endregion
 
     #region Extract Data From URL
-    public async Task<ArticleDTO> ExtractDataFromUrlAsync(int pmcId, string url, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Lazily builds an HttpClient configured for PMC scraping:
+    /// - automatic gzip/deflate/brotli decompression (PMC always serves compressed HTML)
+    /// - shared CookieContainer so anti-bot cookies persist between requests
+    /// - automatic redirect handling
+    /// Seeds the cookie jar with whatever was passed via the constructor.
+    /// </summary>
+    private HttpClient GetOrCreateHttpClient()
+    {
+        if (_httpClient != null) return _httpClient;
+
+        _cookieContainer = new CookieContainer();
+        if (_cookies != null && _cookies.Count > 0)
+        {
+            foreach (var kv in _cookies)
+            {
+                try { _cookieContainer.Add(new Uri("https://pmc.ncbi.nlm.nih.gov"), new Cookie(kv.Key, kv.Value)); }
+                catch { /* malformed cookie names are silently dropped */ }
+            }
+        }
+
+        _httpHandler = new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
+            CookieContainer        = _cookieContainer,
+            UseCookies             = true,
+            AllowAutoRedirect      = true,
+            MaxAutomaticRedirections = 10,
+        };
+
+        _httpClient = new HttpClient(_httpHandler) { Timeout = TimeSpan.FromSeconds(30) };
+        return _httpClient;
+    }
+
+    /// <summary>
+    /// Adds a full set of headers that match a real Chrome browser navigating to a PMC article.
+    /// Without Sec-Fetch-*, Sec-Ch-Ua, Accept-Encoding and Referer, PMC's anti-bot layer
+    /// returns either 429 or a stripped HTML page (empty title), which is what triggers
+    /// the "Empty" retries.
+    /// </summary>
+    private void ApplyBrowserHeaders(HttpRequestMessage request, string url)
+    {
+        // User-Agent / Accept / Accept-Language come from the constructor-provided dictionary
+        // so we keep whatever was harvested at warmup time. Everything else is fixed.
+        if (_headers != null)
+        {
+            foreach (var h in _headers)
+                request.Headers.TryAddWithoutValidation(h.Key, h.Value);
+        }
+
+        // Standard browser navigation headers
+        request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br");
+        request.Headers.TryAddWithoutValidation("Upgrade-Insecure-Requests", "1");
+        request.Headers.TryAddWithoutValidation("DNT", "1");
+        request.Headers.TryAddWithoutValidation("Connection", "keep-alive");
+
+        // Client hints — required by Cloudflare/Akamai for Chrome UA fingerprint match
+        request.Headers.TryAddWithoutValidation("sec-ch-ua",
+            "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"");
+        request.Headers.TryAddWithoutValidation("sec-ch-ua-mobile", "?0");
+        request.Headers.TryAddWithoutValidation("sec-ch-ua-platform", "\"Windows\"");
+
+        // Fetch metadata — we say we navigated to this article from the PMC home
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "same-origin");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "navigate");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-User", "?1");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "document");
+
+        // Referer significantly reduces empty/banned responses
+        request.Headers.TryAddWithoutValidation("Referer", "https://pmc.ncbi.nlm.nih.gov/");
+    }
+
+    public async Task<ArticleDTO?> ExtractDataFromUrlAsync(int pmcId, string url, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("URL must not be null or empty.", nameof(url));
 
-        ArticleDTO result = new ArticleDTO() { PmcId = pmcId };
+        ArticleDTO? result = null;
 
-        if (_httpClient == null)
-            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var http = GetOrCreateHttpClient();
 
-        int k = 7;
+        // Total attempts is now bounded and small. PMC will not magically start serving us
+        // after 15 retries; if 5 fail we move on so we don't waste the batch's time budget.
+        const int MaxAttempts = 5;
+        const int MaxEmptyAttempts = 2;   // empty HTML is a soft-ban; bail fast
+        int emptyCount = 0;
+
         try
         {
-            for (int i = 0; i < k && k < 15; i++)
+            for (int i = 0; i < MaxAttempts; i++)
             {
-                // Each attempt (including retries) must wait for a ticket.
                 await TicketManager.WaitForTicketAsync(cancellationToken).ConfigureAwait(false);
 
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
-
-                if (_headers != null && _headers.Count > 0)
-                {
-                    foreach (var header in _headers)
-                        request.Headers.Add(header.Key, header.Value);
-                }
-                if (_cookies != null && _cookies.Count > 0)
-                {
-                    string cookieStr = string.Join("; ", _cookies.Select(x => $"{x.Key}={x.Value}"));
-                    request.Headers.TryAddWithoutValidation("Cookie", cookieStr);
-                }
+                ApplyBrowserHeaders(request, url);
 
                 var doc = new HtmlDocument();
                 try
                 {
-                    var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                    using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
-                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    if (response.StatusCode == HttpStatusCode.TooManyRequests)
                     {
                         Console.ForegroundColor = ConsoleColor.Red;
                         Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [429 Ban]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
                         Console.ForegroundColor = ConsoleColor.White;
-                        k++;
                         TicketManager.RecordOutcome(RequestOutcome.HttpBan);
                         continue;
                     }
 
-                    response.EnsureSuccessStatusCode();
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [HTTP {(int)response.StatusCode}]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
+                        TicketManager.RecordOutcome(RequestOutcome.HttpError);
+                        continue;
+                    }
+
                     var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                     doc.LoadHtml(html);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    // Propagate real cancellation — do not retry.
                     throw;
                 }
-                catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+                catch (TaskCanceledException)
                 {
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [Timeout]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
-                    k++;
                     TicketManager.RecordOutcome(RequestOutcome.Timeout);
                     continue;
                 }
                 catch (HttpRequestException)
                 {
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [HttpError]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
-                    k++;
                     TicketManager.RecordOutcome(RequestOutcome.HttpError);
                     continue;
                 }
                 catch (Exception)
                 {
                     Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [Error]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
-                    k++;
                     TicketManager.RecordOutcome(RequestOutcome.OtherError);
                     continue;
                 }
-                result = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(result.Title))
-                {
-                    Console.ForegroundColor =
-                        i < 2 ? ConsoleColor.Yellow :
-                        i < 4 ? ConsoleColor.DarkYellow :
-                                ConsoleColor.Red;
-                    Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [Empty]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
-                    Console.ForegroundColor = ConsoleColor.White;
-                    TicketManager.RecordOutcome(RequestOutcome.EmptyResponse);
-                    if (i >= 3)
-                        Console.WriteLine($"Link: https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcId}/");
-                }
-                if (!string.IsNullOrEmpty(result.Title))
+
+                var parsed = await ExtractDataAsync(pmcId, doc).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(parsed.Title))
                 {
                     TicketManager.RecordOutcome(RequestOutcome.Success);
-                    return result;
+                    return parsed;
+                }
+                result = parsed;
+
+                emptyCount++;
+                Console.ForegroundColor = emptyCount == 1 ? ConsoleColor.Yellow : ConsoleColor.Red;
+                Console.WriteLine($"Try {i + 1}\t-\tPMC{pmcId}\t [Empty]\t- Delay: {TicketManager._delay} - Best: {TicketManager._bestDelay}");
+                Console.ForegroundColor = ConsoleColor.White;
+                TicketManager.RecordOutcome(RequestOutcome.EmptyResponse);
+
+                // Soft ban: hammering the same URL only makes it worse. Skip after a couple of tries.
+                if (emptyCount >= MaxEmptyAttempts)
+                {
+                    Console.WriteLine($"Skip\t-\tPMC{pmcId}\t [Empty x{emptyCount}] - https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcId}/");
+                    break;
                 }
             }
         }
@@ -638,6 +714,12 @@ public class ArticleExtractor : IDisposable
             Console.WriteLine("█░█░█░█░█░█░█░█░█░█░█░█░█░█░");
             Console.ForegroundColor = ConsoleColor.White;
         }
+
+        // After all retries we still don't have a Title — surface the failure as null
+        // so the caller (batch submit) can place this PmcId into errorDict instead of
+        // silently submitting a half-empty ArticleDTO.
+        if (result == null || string.IsNullOrEmpty(result.Title))
+            return null;
         return result;
     }
 
@@ -649,19 +731,27 @@ public class ArticleExtractor : IDisposable
     #endregion
 
     #region Extract Data Batch
-    /// <summary>Starts one task per ID; each task waits <c>DelayTime * staggerIndex</c> ms (plus <c>DelayTime/2</c> when <c>staggerIndex &gt; 5</c>) before fetching so requests are staggered.</summary>
+    /// <summary>
+    /// Fetches each ID with a hard concurrency cap (see <see cref="_concurrencyGate"/>).
+    /// Replaces the previous index*delay staggering, which collapsed back to a thundering herd
+    /// once all delays expired and which behaved badly under Colab's network jitter.
+    /// </summary>
     public async Task<List<ArticleDTO>> ExtractDataFromIdsAsync(List<int> ids, CancellationToken cancellationToken = default)
     {
-        async Task<ArticleDTO?> RunStaggeredAsync(int id, int staggerIndex)
+        async Task<ArticleDTO?> RunGatedAsync(int id)
         {
-            // stagger each task so they don't all hit WaitForTicketAsync at the same moment
-            int staggerMs = staggerIndex * TicketManager._delay;
-            if (staggerMs > 0)
-                await Task.Delay(staggerMs, cancellationToken).ConfigureAwait(false);
-            return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
+            await _concurrencyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _concurrencyGate.Release();
+            }
         }
 
-        var tasks = ids.Select((id, i) => RunStaggeredAsync(id, i)).ToList();
+        var tasks = ids.Select(RunGatedAsync).ToList();
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
         var articles = results.Where(a => a != null).Select(a => a!).ToList();
 
@@ -703,6 +793,8 @@ public class ArticleExtractor : IDisposable
             {
                 _httpClient?.Dispose();
                 _httpClient = null;
+                _httpHandler?.Dispose();
+                _httpHandler = null;
             }
             disposedValue = true;
         }
