@@ -1,4 +1,5 @@
-﻿using PmcScraper.DTOs;
+﻿using Newtonsoft.Json;
+using PmcScraper.DTOs;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -209,10 +210,39 @@ public class ArticleExtractorXml : IDisposable
     #region Section Extraction
 
     /// <summary>
-    /// Walks the body's top-level <c>&lt;sec&gt;</c> nodes and returns a title→text map.
-    /// Nested sections are flattened (their titles inlined into the parent text) so the
-    /// resulting dictionary always has one entry per top-level body section, matching the
-    /// structure produced by <see cref="ArticleExtractor.ExtractSections(HtmlAgilityPack.HtmlDocument)"/>.
+    /// Bag returned by <see cref="ExtractSectionsFromNodes"/>; mirrors the
+    /// <c>SectionExtractionResult</c> struct used by <see cref="ArticleExtractor"/>.
+    /// </summary>
+    private struct XmlSectionExtractionResult
+    {
+        public Dictionary<string, string> Sections;
+        public short SectionCount;
+    }
+
+    // JATS body elements we must NEVER fold into the running text — they are figures,
+    // tables, media, inline references, etc. They have InnerText that pollutes prose.
+    private static readonly HashSet<string> _ignoredBodyElements = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "fig", "fig-group",
+        "table-wrap", "table-wrap-group", "table",
+        "graphic", "inline-graphic", "media",
+        "supplementary-material", "disp-formula", "inline-formula",
+        "xref",   // inline citation markers like [1,2]
+        "label",  // figure/table labels — handled where needed
+    };
+
+    // Subsections we drop entirely at depth-0 of <body>. Mirrors the HTML extractor's
+    // class-based skip for "abstract" and "ref-list" but expressed as JATS sec-type values.
+    private static readonly HashSet<string> _skippedTopLevelSecTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "abstract", "ref-list", "supplementary-material",
+    };
+
+    /// <summary>
+    /// Locates the JATS <c>&lt;body&gt;</c> and delegates to <see cref="ExtractSectionsFromNodes"/>,
+    /// which produces a title→text map mirroring <see cref="ArticleExtractor.ExtractSections"/>.
+    /// Returns <c>null</c> if no body exists, or a single <c>full_text</c> entry when the body
+    /// has no element children.
     /// </summary>
     private static Dictionary<string, string>? ExtractSections(XmlNode article)
     {
@@ -220,10 +250,15 @@ public class ArticleExtractorXml : IDisposable
         if (body == null) return null;
 
         var sections = new Dictionary<string, string>();
-        short fallbackCounter = 1;
 
-        var topLevelSecs = body.SelectNodes("./sec");
-        if (topLevelSecs == null || topLevelSecs.Count == 0)
+        // Body with no element children — emit a single full_text entry, matching the HTML
+        // extractor's fallback behaviour.
+        bool hasElementChildren = false;
+        foreach (XmlNode c in body.ChildNodes)
+        {
+            if (c.NodeType == XmlNodeType.Element) { hasElementChildren = true; break; }
+        }
+        if (!hasElementChildren)
         {
             string fullText = NormalizeWhitespace(body.InnerText);
             if (!string.IsNullOrEmpty(fullText))
@@ -231,66 +266,410 @@ public class ArticleExtractorXml : IDisposable
             return sections.Count > 0 ? sections : null;
         }
 
-        foreach (XmlNode sec in topLevelSecs)
-        {
-            string? title = GetText(sec, "./title");
-            string text = ExtractSectionText(sec);
-
-            if (string.IsNullOrWhiteSpace(text)) continue;
-
-            string key = string.IsNullOrWhiteSpace(title)
-                ? "section_" + fallbackCounter++
-                : title!;
-
-            string original = key;
-            int suffix = 2;
-            while (sections.ContainsKey(key))
-                key = $"{original}_{suffix++}";
-
-            sections[key] = text;
-        }
+        var result = ExtractSectionsFromNodes(body.ChildNodes, depth: 0);
+        foreach (var kv in result.Sections)
+            sections[kv.Key] = kv.Value;
 
         return sections.Count > 0 ? sections : null;
     }
 
     /// <summary>
-    /// Builds the readable text for a single body <c>&lt;sec&gt;</c>. Direct paragraphs are
-    /// emitted as-is; nested sections contribute their title (as a header line) followed by
-    /// their own recursively-collected text.
+    /// Walks a sibling list of JATS body nodes and groups text under the nearest preceding
+    /// header (<c>&lt;title&gt;</c>, <c>&lt;label&gt;</c>, <c>&lt;bold&gt;</c>). Mirrors
+    /// <see cref="ArticleExtractor.ExtractSectionsFromNodes"/>:
+    /// <list type="bullet">
+    ///   <item>at <c>depth 0</c>, recurses one level into each <c>&lt;sec&gt;</c> so its
+    ///         sub-sections become their own dictionary entries;</item>
+    ///   <item>at <c>depth ≥ 1</c>, nested <c>&lt;sec&gt;</c> children are flattened into the
+    ///         enclosing section's text;</item>
+    ///   <item>skips <c>abstract</c> / <c>ref-list</c> sub-trees at depth 0
+    ///         (the JATS analogue of the HTML class-based skip);</item>
+    ///   <item>drops figures, tables, formulas, inline citation markers and other
+    ///         non-prose elements (see <see cref="_ignoredBodyElements"/>).</item>
+    /// </list>
     /// </summary>
-    private static string ExtractSectionText(XmlNode section)
+    private static XmlSectionExtractionResult ExtractSectionsFromNodes(
+        XmlNodeList nodes,
+        int depth = 0,
+        short sectionCount = 1)
     {
-        var sb = new StringBuilder();
+        var sections = new Dictionary<string, string>();
+        var header = new StringBuilder();
+        var body = new StringBuilder();
 
-        foreach (XmlNode child in section.ChildNodes)
+        void Flush()
+        {
+            string text = body.ToString().Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                header.Clear(); body.Clear();
+                return;
+            }
+
+            string sectionKey = header.ToString().Trim();
+            if (string.IsNullOrWhiteSpace(sectionKey))
+                sectionKey = "section_" + sectionCount++;
+
+            // De-duplicate repeated headings (e.g. several "Results" subsections at depth 0
+            // when the article reuses the title) — exactly what ArticleExtractor does.
+            string originalKey = sectionKey;
+            while (sections.ContainsKey(sectionKey))
+                sectionKey = $"{originalKey}_{sectionCount++}";
+
+            // Glue together sentences whose period was followed directly by a capital letter
+            // because the source XML packed them with no whitespace (e.g. "...end.Next sentence").
+            string sectionText = Regex.Replace(text, @"\.([A-Z])", ". $1");
+            sections[sectionKey] = sectionText;
+
+            header.Clear();
+            body.Clear();
+        }
+
+        foreach (XmlNode node in nodes)
+        {
+            if (node.NodeType != XmlNodeType.Element) continue;
+
+            string nodeName = node.LocalName.ToLowerInvariant();
+
+            // Skip clutter elements outright.
+            if (_ignoredBodyElements.Contains(nodeName)) continue;
+
+            // At depth 0, drop entire <sec sec-type="abstract|ref-list|...">. Anywhere
+            // depth-0 <ref-list> may appear directly under <body> too.
+            if (nodeName == "ref-list") continue;
+
+            if (depth == 0 && nodeName == "sec")
+            {
+                string secType = (node.Attributes?["sec-type"]?.Value ?? string.Empty).ToLowerInvariant();
+                if (_skippedTopLevelSecTypes.Contains(secType))
+                    continue;
+            }
+
+            // <title>, <label>, <bold> act as headings inside body content. JATS keeps
+            // its h1..h6 equivalents as nested <sec><title>...</title></sec>, so the depth
+            // recursion below handles those automatically; here we only need to recognise
+            // bare headings appearing as siblings of paragraphs.
+            bool isHeader = nodeName is "title" or "label" or "bold" or "b" or "strong";
+
+            if (isHeader)
+            {
+                // New heading after some accumulated body → close previous section.
+                if (body.Length > 0) Flush();
+                else header.Clear();
+
+                string headerText = NormalizeWhitespace(node.InnerText);
+                if (!string.IsNullOrEmpty(headerText))
+                    header.AppendLine(headerText);
+            }
+            else if (nodeName != "sec")
+            {
+                // Plain prose container — paragraph, list, statement, etc. Strip xrefs etc.
+                string prose = ExtractProseText(node);
+                if (!string.IsNullOrEmpty(prose))
+                    body.AppendLine(prose);
+            }
+            else if (depth < 1)
+            {
+                // depth 0: emit ONE entry per top-level <sec>, keyed by the sec's own
+                // <title>. Subsections are flattened into that entry with their titles
+                // inlined as in-body sub-headers, preserving the parent context that the
+                // pure-recursive HTML algorithm would otherwise lose (e.g. parent
+                // "2. Results and Discussion" with child "2.1. Scalp Microbiome ...").
+                Flush();
+
+                string parentTitle = NormalizeWhitespace(
+                    node.SelectSingleNode("./title")?.InnerText ?? string.Empty);
+                if (!string.IsNullOrEmpty(parentTitle))
+                    header.AppendLine(parentTitle);
+
+                AppendSecBody(node, body);
+
+                Flush();
+            }
+            else
+            {
+                // depth >= 1: flatten this nested sec into the surrounding body, inlining
+                // its own <title> as a sub-header line so the structure is still readable.
+                AppendSecBody(node, body);
+            }
+        }
+
+        Flush();
+        return new XmlSectionExtractionResult { Sections = sections, SectionCount = sectionCount };
+    }
+
+    /// <summary>
+    /// Appends a single <c>&lt;sec&gt;</c>'s readable content to <paramref name="body"/>:
+    /// its own <c>&lt;title&gt;</c> first (as an in-body sub-header line), then prose
+    /// children in document order, with any nested <c>&lt;sec&gt;</c> flattened the same
+    /// way (recursively, depth-first). Non-prose elements (figures, tables, xrefs, …) and
+    /// <c>abstract</c>/<c>ref-list</c> sub-trees are skipped.
+    /// </summary>
+    private static void AppendSecBody(XmlNode sec, StringBuilder body)
+    {
+        // Section's own title, inlined as a sub-header line.
+        var titleNode = sec.SelectSingleNode("./title");
+        if (titleNode != null)
+        {
+            string title = NormalizeWhitespace(titleNode.InnerText);
+            if (!string.IsNullOrEmpty(title))
+                body.AppendLine(title);
+        }
+
+        foreach (XmlNode child in sec.ChildNodes)
         {
             if (child.NodeType != XmlNodeType.Element) continue;
 
             string name = child.LocalName.ToLowerInvariant();
 
+            // The title was already emitted above.
             if (name == "title") continue;
+
+            if (_ignoredBodyElements.Contains(name)) continue;
+            if (name == "ref-list") continue;
 
             if (name == "sec")
             {
-                string? subTitle = GetText(child, "./title");
-                if (!string.IsNullOrEmpty(subTitle))
-                {
-                    if (sb.Length > 0) sb.AppendLine();
-                    sb.AppendLine(subTitle);
-                }
-                string subText = ExtractSectionText(child);
-                if (!string.IsNullOrEmpty(subText))
-                    sb.AppendLine(subText);
+                string secType = (child.Attributes?["sec-type"]?.Value ?? string.Empty).ToLowerInvariant();
+                if (_skippedTopLevelSecTypes.Contains(secType)) continue;
+
+                AppendSecBody(child, body);
+                continue;
             }
-            else
+
+            if (name is "label" or "bold" or "b" or "strong")
             {
-                string text = NormalizeWhitespace(child.InnerText);
-                if (!string.IsNullOrEmpty(text))
-                    sb.AppendLine(text);
+                string headerText = NormalizeWhitespace(child.InnerText);
+                if (!string.IsNullOrEmpty(headerText))
+                    body.AppendLine(headerText);
+                continue;
+            }
+
+            string prose = ExtractProseText(child);
+            if (!string.IsNullOrEmpty(prose))
+                body.AppendLine(prose);
+        }
+    }
+
+    /// <summary>
+    /// Returns the prose text of <paramref name="node"/> with non-prose descendants
+    /// (figures, tables, formulas, <c>&lt;xref&gt;</c>, <c>&lt;label&gt;</c>, …) removed and
+    /// whitespace normalised. Operates on a clone so the original document is untouched.
+    /// </summary>
+    private static string ExtractProseText(XmlNode node)
+    {
+        // Cloning is a shallow-tree copy; fast enough for paragraphs and avoids the
+        // alternative of writing a manual recursive walker.
+        var clone = node.CloneNode(deep: true);
+        RemoveIgnored(clone);
+        return NormalizeWhitespace(clone.InnerText);
+    }
+
+    private static void RemoveIgnored(XmlNode node)
+    {
+        // Walk children in reverse so removals don't invalidate the index.
+        for (int i = node.ChildNodes.Count - 1; i >= 0; i--)
+        {
+            var child = node.ChildNodes[i];
+            if (child == null) continue;
+
+            if (child.NodeType == XmlNodeType.Element &&
+                _ignoredBodyElements.Contains(child.LocalName))
+            {
+                node.RemoveChild(child);
+                continue;
+            }
+
+            if (child.HasChildNodes)
+                RemoveIgnored(child);
+        }
+    }
+
+    #endregion
+
+    #region Table extraction
+
+    /// <summary>
+    /// Parses any XML fragment or full article and returns one DTO per <c>&lt;table-wrap&gt;</c>
+    /// (body, <c>floats-group</c>, or elsewhere). Does not require an <c>&lt;article&gt;</c> root.
+    /// </summary>
+    public static List<ArticleTableJsonDto> ExtractTablesFromXml(string xmlContent)
+    {
+        var list = new List<ArticleTableJsonDto>();
+        if (string.IsNullOrWhiteSpace(xmlContent)) return list;
+
+        var xmlDoc = new XmlDocument();
+        var settings = new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Ignore,
+            XmlResolver = null
+        };
+        using (var stringReader = new System.IO.StringReader(xmlContent))
+        using (var xmlReader = XmlReader.Create(stringReader, settings))
+        {
+            xmlDoc.Load(xmlReader);
+        }
+
+        var wraps = xmlDoc.SelectNodes(".//table-wrap");
+        if (wraps == null) return list;
+
+        foreach (XmlNode wrap in wraps)
+        {
+            var dto = ExtractTableWrap(wrap);
+            if (dto != null) list.Add(dto);
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// Serializes <paramref name="dto"/> to indented JSON (same shape stored in
+    /// <see cref="ArticleDTO.Sections"/>).
+    /// </summary>
+    public static string SerializeTableToJson(ArticleTableJsonDto dto)
+        => JsonConvert.SerializeObject(dto, Newtonsoft.Json.Formatting.None);
+
+    private static ArticleTableJsonDto? ExtractTableWrap(XmlNode tableWrap)
+    {
+        if (tableWrap?.LocalName != "table-wrap") return null;
+
+        var table = tableWrap.SelectSingleNode(".//table");
+        if (table == null) return null;
+
+        string tableName =
+            GetText(tableWrap, "./label")
+            ?? GetText(tableWrap, "./caption/title")
+            ?? tableWrap.Attributes?["id"]?.Value?.Trim()
+            ?? "Table";
+
+        var descParts = new List<string>();
+        var capPs = tableWrap.SelectNodes("./caption//p");
+        if (capPs != null)
+        {
+            foreach (XmlNode p in capPs)
+            {
+                var t = NormalizeWhitespace(p.InnerText);
+                if (!string.IsNullOrEmpty(t)) descParts.Add(t);
+            }
+        }
+        if (descParts.Count == 0)
+        {
+            var cap = tableWrap.SelectSingleNode("./caption");
+            if (cap != null)
+            {
+                var t = NormalizeWhitespace(cap.InnerText);
+                if (!string.IsNullOrEmpty(t)) descParts.Add(t);
             }
         }
 
-        return sb.ToString().Trim();
+        var footPs = tableWrap.SelectNodes("./table-wrap-foot//p");
+        if (footPs != null)
+        {
+            foreach (XmlNode p in footPs)
+            {
+                var t = NormalizeWhitespace(p.InnerText);
+                if (!string.IsNullOrEmpty(t)) descParts.Add(t);
+            }
+        }
+
+        string? description = descParts.Count > 0 ? string.Join(" ", descParts) : null;
+
+        var columns = new List<string>();
+        XmlNodeList? thNodes = table.SelectNodes(".//thead//th");
+        if (thNodes == null || thNodes.Count == 0)
+            thNodes = table.SelectNodes(".//tbody/tr[1]//th");
+
+        if (thNodes != null)
+        {
+            foreach (XmlNode th in thNodes)
+            {
+                var c = ExtractCellText(th);
+                if (!string.IsNullOrEmpty(c)) columns.Add(c);
+            }
+        }
+
+        var data = new List<List<string>>();
+        var tbodies = table.SelectNodes("./tbody");
+        if (tbodies != null)
+        {
+            foreach (XmlNode tbody in tbodies)
+            {
+                foreach (XmlNode tr in tbody.ChildNodes)
+                {
+                    if (tr.NodeType != XmlNodeType.Element || tr.LocalName != "tr") continue;
+
+                    var tds = tr.SelectNodes("./td");
+                    if (tds == null || tds.Count == 0) continue;
+
+                    var row = new List<string>();
+                    foreach (XmlNode td in tds)
+                        row.Add(ExtractCellText(td));
+
+                    if (row.Count > 0) data.Add(row);
+                }
+            }
+        }
+
+        var tfoots = table.SelectNodes("./tfoot");
+        if (tfoots != null)
+        {
+            foreach (XmlNode tfoot in tfoots)
+            {
+                foreach (XmlNode tr in tfoot.ChildNodes)
+                {
+                    if (tr.NodeType != XmlNodeType.Element || tr.LocalName != "tr") continue;
+                    var tds = tr.SelectNodes("./td");
+                    if (tds == null || tds.Count == 0) continue;
+                    var row = new List<string>();
+                    foreach (XmlNode td in tds)
+                        row.Add(ExtractCellText(td));
+                    if (row.Count > 0) data.Add(row);
+                }
+            }
+        }
+
+        return new ArticleTableJsonDto
+        {
+            TableName = tableName,
+            Description = description,
+            Colmuns = columns,
+            Data = data
+        };
+    }
+
+    private static string ExtractCellText(XmlNode cell)
+    {
+        if (cell == null) return string.Empty;
+        var clone = cell.CloneNode(deep: true);
+        RemoveIgnored(clone);
+        return NormalizeWhitespace(clone.InnerText);
+    }
+
+    /// <summary>
+    /// Finds every <c>&lt;table-wrap&gt;</c> under <paramref name="article"/> (including
+    /// <c>floats-group</c>), converts each to JSON, and merges into <paramref name="sections"/>
+    /// using the table label/title as the dictionary key (de-duplicated).
+    /// </summary>
+    private static void MergeExtractedTablesIntoSections(XmlNode article, ref Dictionary<string, string>? sections)
+    {
+        var wraps = article.SelectNodes(".//table-wrap");
+        if (wraps == null || wraps.Count == 0) return;
+
+        sections ??= new Dictionary<string, string>();
+        short suffix = 1;
+
+        foreach (XmlNode wrap in wraps)
+        {
+            var dto = ExtractTableWrap(wrap);
+            if (dto == null) continue;
+
+            string baseKey = string.IsNullOrWhiteSpace(dto.TableName) ? "Table" : dto.TableName.Trim();
+            string key = baseKey;
+            while (sections.ContainsKey(key))
+                key = $"{baseKey}_{suffix++}";
+
+            sections[key] = SerializeTableToJson(dto);
+        }
     }
 
     #endregion
@@ -390,6 +769,7 @@ public class ArticleExtractorXml : IDisposable
 
         string? abstractText = ExtractAbstract(article);
         Dictionary<string, string>? sections = ExtractSections(article);
+        MergeExtractedTablesIntoSections(article, ref sections);
 
         return new ArticleDTO
         {

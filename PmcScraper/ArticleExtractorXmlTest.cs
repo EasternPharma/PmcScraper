@@ -100,14 +100,12 @@ public static class ArticleExtractorXmlTest
             ok &= AssertContains("AbstractText", "adipogenesis", article.AbstractText);
         }
 
-        // Body sections — top-level <sec> children of <body>:
-        // Introduction, Results, Discussion, Conclusions, Materials and methods,
-        // Abbreviations, Competing interests, Authors' contributions
+        // Body sections. Each top-level <sec> appears as its own dict entry keyed by
+        // its <title>. Subsections are flattened into the parent entry with their titles
+        // inlined as sub-headers in the body text — so the parent context is preserved.
         ok &= AssertTrue("Sections not null", article.Sections != null);
         if (article.Sections != null)
         {
-            ok &= AssertTrue($"Sections count >= 4 (got {article.Sections.Count})",
-                article.Sections.Count >= 4);
             ok &= AssertTrue("Sections contains 'Introduction'",
                 article.Sections.Keys.Any(k => k.Equals("Introduction", StringComparison.OrdinalIgnoreCase)));
             ok &= AssertTrue("Sections contains 'Results'",
@@ -116,11 +114,23 @@ public static class ArticleExtractorXmlTest
                 article.Sections.Keys.Any(k => k.Equals("Discussion", StringComparison.OrdinalIgnoreCase)));
             ok &= AssertTrue("Sections contains 'Conclusions'",
                 article.Sections.Keys.Any(k => k.Equals("Conclusions", StringComparison.OrdinalIgnoreCase)));
+            ok &= AssertTrue("Sections contains 'Materials and methods'",
+                article.Sections.Keys.Any(k => k.Equals("Materials and methods", StringComparison.OrdinalIgnoreCase)));
+            ok &= AssertTrue("Sections contains 'Abbreviations'",
+                article.Sections.Keys.Any(k => k.Equals("Abbreviations", StringComparison.OrdinalIgnoreCase)));
 
-            // Make sure body content actually flowed in.
             if (article.Sections.TryGetValue("Introduction", out var intro))
             {
-                ok &= AssertContains("Sections[Introduction]", "adipogenesis", intro);
+                ok &= AssertContains("Sections[Introduction] has 'adipogenesis'", "adipogenesis", intro);
+                ok &= AssertTrue("Sections[Introduction] >= 1000 chars", intro.Length >= 1000);
+            }
+
+            // Results section has 4 subsections — confirm at least one subsection title
+            // is inlined in its body (proves nested-sec flattening is working).
+            if (article.Sections.TryGetValue("Results", out var results))
+            {
+                ok &= AssertContains("Sections[Results] inlines subsection title",
+                    "ASC stimulates", results);
             }
         }
 
@@ -213,6 +223,55 @@ public static class ArticleExtractorXmlTest
 
     private static string Truncate(string s, int max)
         => s.Length <= max ? s : s.Substring(0, max) + "…";
+
+    #endregion
+
+    #region Table extraction (sample.xml)
+
+    /// <summary>
+    /// Loads <c>sample.xml</c> from the app output directory and validates
+    /// <see cref="ArticleExtractorXml.ExtractTablesFromXml"/>.
+    /// </summary>
+    public static bool RunExtractTablesFromSample()
+    {
+        Console.WriteLine("=== ArticleExtractorXml table extraction — sample.xml ===");
+
+        string path = Path.Combine(AppContext.BaseDirectory, "sample.xml");
+        if (!File.Exists(path))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  [SKIP] sample.xml not found at {path}");
+            Console.ResetColor();
+            return true;
+        }
+
+        string xml = File.ReadAllText(path);
+        var tables = ArticleExtractorXml.ExtractTablesFromXml(xml);
+        if (tables.Count != 1)
+        {
+            Fail($"Expected 1 table-wrap, got {tables.Count}");
+            return false;
+        }
+
+        var t = tables[0];
+        bool ok = true;
+        ok &= AssertEqual("TableName", "Table 1", t.TableName);
+        ok &= AssertTrue("Description mentions follicle",
+            t.Description != null && t.Description.Contains("follicle", StringComparison.OrdinalIgnoreCase));
+        ok &= AssertEqual("Colmuns count", 4, t.Colmuns.Count);
+        ok &= AssertTrue("First column is Group",
+            t.Colmuns.Count > 0 && t.Colmuns[0].Contains("Group", StringComparison.OrdinalIgnoreCase));
+        ok &= AssertTrue("Data has >= 3 rows", t.Data.Count >= 3);
+        ok &= AssertTrue("Row with Adenosine present",
+            t.Data.Any(row => row.Any(cell => cell.Contains("Adenosine", StringComparison.OrdinalIgnoreCase))));
+
+        Console.WriteLine(ArticleExtractorXml.SerializeTableToJson(t));
+
+        Console.ForegroundColor = ok ? ConsoleColor.Green : ConsoleColor.Red;
+        Console.WriteLine($"\n=== Table sample: {(ok ? "PASS" : "FAIL")} ===");
+        Console.ResetColor();
+        return ok;
+    }
 
     #endregion
 }
