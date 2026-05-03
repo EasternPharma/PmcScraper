@@ -83,7 +83,7 @@ async Task<int> BatchXML(string currentEnvBase, string apiKey)
             ErrorDict = errorDict,
             FullTextIds = fullTextIds.Count > 0 ? fullTextIds : null
         });
-        Console.WriteLine($"Submit result - success: {response.Success}" +
+        Console.WriteLine($"Submit result - success: {response.Success} - Full-text: {fullTextIds.Count}" +
             (response.Error != null ? $", error: {response.Error}" : ""));
     }
     return processCount;
