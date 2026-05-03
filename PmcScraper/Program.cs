@@ -20,7 +20,7 @@ string apiKey = "adc039160e11aca97d1d65e0a2c3ff051708";
 
 Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\n");
 
-async Task<int> BatchXML(string currentEnvBase , string apiKey)
+async Task<int> BatchXML(string currentEnvBase, string apiKey)
 {
     List<int> ids = new List<int>();
     int processCount = 0;
@@ -30,6 +30,7 @@ async Task<int> BatchXML(string currentEnvBase , string apiKey)
         Console.WriteLine($"Health: {health.Status}");
         var freeArticles = await apiCall.ClaimFreeArticlesAsync(new GetFreeArticleRequestDto { User = workerName, BatchSize = 50 });
         ids = freeArticles.Select(x => x.PmcId).ToList();
+        Console.WriteLine(string.Join("\t", ids));
         Console.WriteLine($"Claimed {ids.Count} free articles.");
     }
     using var xmlExtractor = new ArticleExtractorXml(
