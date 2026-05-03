@@ -948,11 +948,16 @@ public class ArticleExtractorXml : IDisposable
     /// parse are skipped — the returned list contains only successful, non-null results
     /// and preserves the original id order within each chunk.
     /// </summary>
+    /// <param name="showProgressBar">
+    /// When <c>true</c>, draws a live console progress bar (or sparse log lines if stdout
+    /// is redirected). Set <c>false</c> for silent batch runs.
+    /// </param>
     public async Task<List<ArticleDTO>> GetArticlesAsync(
         List<int> ids,
         int splitCount = 5,
         int restTimeMs = 0,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool showProgressBar = true)
     {
         if (ids == null) throw new ArgumentNullException(nameof(ids));
         if (splitCount <= 0) throw new ArgumentOutOfRangeException(nameof(splitCount), "splitCount must be > 0");
@@ -960,6 +965,31 @@ public class ArticleExtractorXml : IDisposable
 
         var articles = new List<ArticleDTO>(ids.Count);
         if (ids.Count == 0) return articles;
+
+        int total = ids.Count;
+        int completed = 0;
+        int succeeded = 0;
+        var progressLock = new object();
+
+        void ReportProgress(ArticleDTO? result)
+        {
+            if (!showProgressBar) return;
+            lock (progressLock)
+            {
+                completed++;
+                if (result != null) succeeded++;
+                WriteFetchProgressLine(completed, total, succeeded);
+            }
+        }
+
+        if (showProgressBar)
+        {
+            lock (progressLock)
+            {
+                Console.WriteLine($"Fetching {total} articles (parallel chunk size {splitCount}) …");
+                WriteFetchProgressLine(0, total, 0);
+            }
+        }
 
         int chunkCount = (int)Math.Ceiling(ids.Count / (double)splitCount);
 
@@ -969,8 +999,21 @@ public class ArticleExtractorXml : IDisposable
 
             var chunk = ids.Skip(i * splitCount).Take(splitCount).ToList();
 
-            // Dispatch all ids in this chunk in parallel.
-            var tasks = chunk.Select(id => ExtractArticleSafeAsync(id, cancellationToken)).ToList();
+            // Dispatch all ids in this chunk in parallel; update the bar as each one finishes.
+            var tasks = chunk.Select(async id =>
+            {
+                ArticleDTO? r = null;
+                try
+                {
+                    r = await ExtractArticleSafeAsync(id, cancellationToken).ConfigureAwait(false);
+                    return r;
+                }
+                finally
+                {
+                    ReportProgress(r);
+                }
+            }).ToList();
+
             var results = await Task.WhenAll(tasks).ConfigureAwait(false);
 
             foreach (var article in results)
@@ -984,7 +1027,55 @@ public class ArticleExtractorXml : IDisposable
                 await Task.Delay(restTimeMs, cancellationToken).ConfigureAwait(false);
         }
 
+        if (showProgressBar)
+        {
+            lock (progressLock)
+            {
+                // Ensure a trailing newline after the in-place \r progress line.
+                if (!Console.IsOutputRedirected)
+                    Console.WriteLine();
+            }
+        }
+
         return articles;
+    }
+
+    /// <summary>
+    /// Renders a single-line progress bar. Must be called under the same lock used in
+    /// <see cref="GetArticlesAsync"/> (or any lock that serializes console output).
+    /// </summary>
+    private static void WriteFetchProgressLine(int completed, int total, int succeeded)
+    {
+        if (total <= 0) return;
+
+        if (Console.IsOutputRedirected)
+        {
+            // Log-friendly: at most ~20 lines for large batches.
+            int step = Math.Max(1, total / 20);
+            if (completed == 0 || completed == total || completed % step == 0)
+                Console.WriteLine($"PMC XML fetch: {completed}/{total} ({100.0 * completed / total:F0}%) — ok: {succeeded}");
+            return;
+        }
+
+        int width = Console.WindowWidth;
+        if (width < 20) width = 80;
+
+        int barMax = Math.Clamp(width - 36, 10, 40);
+        int filled = total > 0 ? (int)Math.Round(barMax * (double)completed / total) : 0;
+        filled = Math.Clamp(filled, 0, barMax);
+
+        var bar = new string('█', filled) + new string('░', barMax - filled);
+        double pct = 100.0 * completed / total;
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.Write($"\r[{bar}] ");
+        Console.ForegroundColor = ConsoleColor.White;
+        Console.Write($"{completed}/{total} ({pct:F0}%) ");
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.Write($"ok:{succeeded} ");
+        Console.ResetColor();
+        // Pad clears trailing junk when the line shortens.
+        Console.Write(new string(' ', Math.Max(0, width - barMax - 30)));
     }
 
     /// <summary>
