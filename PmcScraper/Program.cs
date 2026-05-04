@@ -7,6 +7,8 @@ bases["local"] = "http://localhost:8000";
 bases["office"] = "http://localhost:1368";
 string envBase = args.Length > 0 ? args[0].ToLowerInvariant() : "pmc";
 string workerName = args.Length > 1 ? args[1] : "colab_xml_1";
+int selectApiKey = args.Length > 2 ? int.Parse(args[2]) : 1;
+
 if (!bases.ContainsKey(envBase))
 {
     Console.ForegroundColor = ConsoleColor.Red;
@@ -16,9 +18,20 @@ if (!bases.ContainsKey(envBase))
     return;
 }
 
-string apiKey = "adc039160e11aca97d1d65e0a2c3ff051708";
 
-Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\n");
+Dictionary<int, string> apikeys= new Dictionary<int, string>();
+apikeys[1] = "adc039160e11aca97d1d65e0a2c3ff051708"; // behzad
+apikeys[2] = "44ff531b462b4b3b4d6df81ec2fa71a0a809"; // navid
+apikeys[3] = "30d301581c6419236c6d83ce614e24d53f08"; // hamid
+apikeys[4] = "d7253ccdfd26fe9b1794958b92c7b641c908"; // hamid
+apikeys[5] = "aa6e87f6bc1fb31e81ecbced3d1dd44d1109"; // hamid
+apikeys[6] = "37552ed91e1df90c87d29caeae81e5878e09"; // hamid
+apikeys[7] = "c076a802f9d39de06af03f4f531076a1ec08"; // hamid
+apikeys[8] = "7076420f8af7e56a27f86d07ba313e966408"; // hamid
+
+string apiKey = apikeys[selectApiKey];
+
+Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\nSelect {selectApiKey} from apikeys: {apiKey}\n");
 
 async Task<int> BatchXML(string currentEnvBase, string apiKey)
 {
