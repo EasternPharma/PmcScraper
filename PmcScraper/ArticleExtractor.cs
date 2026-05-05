@@ -12,7 +12,7 @@ struct SectionExtractionResult
     public short SectionCount { get; set; }
 }
 
-public class ArticleExtractor : IDisposable
+public class ArticleExtractor : IPmcScraper
 {
     #region Properties and Fields
     private bool disposedValue;
@@ -119,6 +119,9 @@ public class ArticleExtractor : IDisposable
         { XPath.OgTitle,         "og:title" },
         { XPath.OgType,          "og:type" },
     };
+
+    public string EnvironmentName { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
+    public string WorkerName { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
     #endregion
 
     #region Set Header Logic
@@ -723,7 +726,7 @@ public class ArticleExtractor : IDisposable
         return result;
     }
 
-    public async Task<ArticleDTO?> ExtractDataFromIdAsync(int pmcId, CancellationToken cancellationToken = default)
+    public async Task<ArticleDTO?> GetArticleAsync(int pmcId, CancellationToken cancellationToken = default)
     {
         string url = $"https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcId}/";
         return await ExtractDataFromUrlAsync(pmcId, url, cancellationToken).ConfigureAwait(false);
@@ -736,14 +739,14 @@ public class ArticleExtractor : IDisposable
     /// Replaces the previous index*delay staggering, which collapsed back to a thundering herd
     /// once all delays expired and which behaved badly under Colab's network jitter.
     /// </summary>
-    public async Task<List<ArticleDTO>> ExtractDataFromIdsAsync(List<int> ids, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<ArticleDTO>> GetArticlesAsync(int[] pmcIds, int splitCount = 5, int restTimeMs = 0, bool showProgressBar = true, CancellationToken cancellationToken = default)
     {
-        async Task<ArticleDTO?> RunGatedAsync(int id)
+        async Task<ArticleDTO?> RunGatedAsync(int pmcId)
         {
             await _concurrencyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                return await ExtractDataFromIdAsync(id, cancellationToken).ConfigureAwait(false);
+                return await GetArticleAsync(pmcId, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -751,7 +754,7 @@ public class ArticleExtractor : IDisposable
             }
         }
 
-        var tasks = ids.Select(RunGatedAsync).ToList();
+        var tasks = pmcIds.Select(RunGatedAsync).ToList();
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
         var articles = results.Where(a => a != null).Select(a => a!).ToList();
 
@@ -781,6 +784,8 @@ public class ArticleExtractor : IDisposable
     }
     #endregion
 
+
+    
     #region IDisposable Support
     /// <summary>
     /// Releases managed resources. Called by <see cref="IDisposable.Dispose"/>.
@@ -805,5 +810,6 @@ public class ArticleExtractor : IDisposable
         Dispose(disposing: true);
         GC.SuppressFinalize(this);
     }
+
     #endregion
 }

@@ -13,10 +13,11 @@ using System.Xml;
 
 namespace PmcScraper;
 
-public class ArticleExtractorXml : IDisposable
+public class ArticleExtractorXml : IPmcScraper
 {
     #region Fields
-
+    public string EnvironmentName { get; set; }
+    public string WorkerName { get; set; }
     private readonly CookieContainer _cookieContainer;
     private readonly HttpClientHandler _httpHandler;
     private readonly HttpClient _httpClient;
@@ -930,7 +931,7 @@ public class ArticleExtractorXml : IDisposable
     /// Convenience method: downloads the article XML for <paramref name="pmcId"/> and parses
     /// it into an <see cref="ArticleDTO"/>.
     /// </summary>
-    public async Task<ArticleDTO?> ExtractArticleAsync(int pmcId, CancellationToken cancellationToken = default)
+    public async Task<ArticleDTO?> GetArticleAsync(int pmcId, CancellationToken cancellationToken = default)
     {
         string xml = await GetArticleXmlAsync(pmcId, cancellationToken).ConfigureAwait(false);
         return ExtractArticleItems(xml);
@@ -952,21 +953,16 @@ public class ArticleExtractorXml : IDisposable
     /// When <c>true</c>, draws a live console progress bar (or sparse log lines if stdout
     /// is redirected). Set <c>false</c> for silent batch runs.
     /// </param>
-    public async Task<List<ArticleDTO>> GetArticlesAsync(
-        List<int> ids,
-        int splitCount = 5,
-        int restTimeMs = 0,
-        CancellationToken cancellationToken = default,
-        bool showProgressBar = true)
+    public async Task<IEnumerable<ArticleDTO>> GetArticlesAsync(int[] pmcIds, int splitCount = 5, int restTimeMs = 0, bool showProgressBar = true, CancellationToken cancellationToken = default)
     {
-        if (ids == null) throw new ArgumentNullException(nameof(ids));
+        if (pmcIds == null) throw new ArgumentNullException(nameof(pmcIds));
         if (splitCount <= 0) throw new ArgumentOutOfRangeException(nameof(splitCount), "splitCount must be > 0");
         if (restTimeMs < 0) throw new ArgumentOutOfRangeException(nameof(restTimeMs), "restTimeMs must be >= 0");
 
-        var articles = new List<ArticleDTO>(ids.Count);
-        if (ids.Count == 0) return articles;
+        var articles = new List<ArticleDTO>(pmcIds.Length);
+        if (pmcIds.Length == 0) return articles;
 
-        int total = ids.Count;
+        int total = pmcIds.Length;
         int completed = 0;
         int succeeded = 0;
         var progressLock = new object();
@@ -991,13 +987,13 @@ public class ArticleExtractorXml : IDisposable
             }
         }
 
-        int chunkCount = (int)Math.Ceiling(ids.Count / (double)splitCount);
+        int chunkCount = (int)Math.Ceiling(pmcIds.Length / (double)splitCount);
 
         for (int i = 0; i < chunkCount; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var chunk = ids.Skip(i * splitCount).Take(splitCount).ToList();
+            var chunk = pmcIds.Skip(i * splitCount).Take(splitCount).ToList();
 
             // Dispatch all ids in this chunk in parallel; update the bar as each one finishes.
             var tasks = chunk.Select(async id =>
@@ -1087,7 +1083,7 @@ public class ArticleExtractorXml : IDisposable
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return await ExtractArticleAsync(pmcId, cancellationToken).ConfigureAwait(false);
+            return await GetArticleAsync(pmcId, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

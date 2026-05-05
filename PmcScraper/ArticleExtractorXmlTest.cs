@@ -28,7 +28,7 @@ public static class ArticleExtractorXmlTest
                 timeoutMs: 30_000,
                 maxAttempts: 3);
 
-            article = await extractor.ExtractArticleAsync(TestPmcId);
+            article = await extractor.GetArticleAsync(TestPmcId);
         }
         catch (Exception ex)
         {
