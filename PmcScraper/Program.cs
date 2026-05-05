@@ -4,20 +4,26 @@ using PmcScraper.DTOs;
 const int XmlMethod = 1;
 const int WebMethod = 2;
 
-Dictionary<string, string> bases = new Dictionary<string, string>();
-bases["pmc"] = "https://pmc.bregulator.com";
-bases["local"] = "http://localhost:8000";
-bases["office"] = "http://localhost:1368";
+Dictionary<string, string> bases = new(StringComparer.OrdinalIgnoreCase)
+{
+    ["pmc"] = "https://pmc.bregulator.com",
+    ["local"] = "http://localhost:8000",
+    ["office"] = "http://localhost:1368"
+};
 
-Dictionary<int, string> apikeys = new Dictionary<int, string>();
-apikeys[1] = "adc039160e11aca97d1d65e0a2c3ff051708"; // behzad
-apikeys[2] = "44ff531b462b4b3b4d6df81ec2fa71a0a809"; // navid
-apikeys[3] = "30d301581c6419236c6d83ce614e24d53f08"; // hamid
-apikeys[4] = "d7253ccdfd26fe9b1794958b92c7b641c908"; // hamid
-apikeys[5] = "aa6e87f6bc1fb31e81ecbced3d1dd44d1109"; // hamid
-apikeys[6] = "37552ed91e1df90c87d29caeae81e5878e09"; // hamid
-apikeys[7] = "c076a802f9d39de06af03f4f531076a1ec08"; // hamid
-apikeys[8] = "7076420f8af7e56a27f86d07ba313e966408"; // hamid
+Dictionary<int, string> apikeys = new()
+{
+    [1] = "adc039160e11aca97d1d65e0a2c3ff051708", // behzad
+    [2] = "44ff531b462b4b3b4d6df81ec2fa71a0a809", // navid
+    [3] = "30d301581c6419236c6d83ce614e24d53f08", // hamid
+    [4] = "d7253ccdfd26fe9b1794958b92c7b641c908", // hamid
+    [5] = "aa6e87f6bc1fb31e81ecbced3d1dd44d1109", // hamid
+    [6] = "37552ed91e1df90c87d29caeae81e5878e09", // hamid
+    [7] = "c076a802f9d39de06af03f4f531076a1ec08", // hamid
+    [8] = "7076420f8af7e56a27f86d07ba313e966408"  // hamid
+};
+
+static string GetMethodName(int method) => method == XmlMethod ? "Xml" : "Web";
 
 void ShowUsage()
 {
@@ -88,8 +94,11 @@ async Task Status(string currentEnvBase)
     Console.WriteLine($"Scraped:\t{articleStatics.TotalScraped}");
     Console.WriteLine($"FullTxt:\t{articleStatics.TotalFullText}");
     Console.WriteLine($"Error:\n{articleStatics.TotalError}");
-    string methodName = scrapMethod == XmlMethod ? "Xml" : "Web";
-    Console.WriteLine($"\nMethod: {methodName}\nWorker: {workerName}\nEnv Base: {envBase}\nSelect {selectApiKey} from apikeys: {apiKey}\n");
+    string methodName = GetMethodName(scrapMethod);
+    string maskedApiKey = apiKey.Length <= 6
+        ? "***"
+        : $"{apiKey[..3]}...{apiKey[^3..]}";
+    Console.WriteLine($"\nMethod: {methodName}\nWorker: {workerName}\nEnv Base: {envBase}\nApiKeyIndex: {selectApiKey} ({maskedApiKey})\n");
 }
 
 async Task<int> BatchScrap(string currentEnvBase, string selectedApiKey, int method)
@@ -101,7 +110,7 @@ async Task<int> BatchScrap(string currentEnvBase, string selectedApiKey, int met
         Console.WriteLine($"Health: {health.Status}");
         int batchSize = method == XmlMethod ? 50 : 10;
         var freeArticles = await apiCall.ClaimFreeArticlesAsync(new GetFreeArticleRequestDto { User = workerName, BatchSize = batchSize });
-        ids = freeArticles.Select(x => x.PmcId).ToList();
+        ids = (freeArticles ?? Array.Empty<ArticleListDto>()).Select(x => x.PmcId).ToList();
         Console.WriteLine(string.Join("\t", ids));
         Console.WriteLine($"Claimed {ids.Count} free articles.");
     }
@@ -125,17 +134,10 @@ async Task<int> BatchScrap(string currentEnvBase, string selectedApiKey, int met
         WebMethod => new ArticleExtractor(),
         _ => throw new ArgumentOutOfRangeException(nameof(method), method, "Method must be 1 (Xml) or 2 (Web).")
     };
-    if (method == XmlMethod)
-    {
-        articles.AddRange(await pmcScraper.GetArticlesAsync(uniqueIds, splitCount: 8, restTimeMs: 0));
-    }
-    if (method == WebMethod)
-    {
-        articles.AddRange(await pmcScraper.GetArticlesAsync(uniqueIds));
-    }
+    int splitCount = method == XmlMethod ? 8 : 5;
+    int restTimeMs = method == XmlMethod ? 0 : 0;
+    articles.AddRange(await pmcScraper.GetArticlesAsync(uniqueIds, splitCount: splitCount, restTimeMs: restTimeMs));
     sw.Stop();
-
-    articles ??= new List<ArticleDTO>();
 
     var claimedIdSet = uniqueIds.ToHashSet();
     var successIds = articles
@@ -145,7 +147,7 @@ async Task<int> BatchScrap(string currentEnvBase, string selectedApiKey, int met
     var successDict = successIds.ToDictionary(id => id, _ => true);
     var errorDict = claimedIdSet
         .Where(id => !successIds.Contains(id))
-        .ToDictionary(id => id, _ => $"Extraction failed ({(method == XmlMethod ? "Xml" : "Web")})");
+        .ToDictionary(id => id, _ => $"Extraction failed ({GetMethodName(method)})");
 
     Console.WriteLine($"Extracted {articles.Count} / {uniqueIds.Length} articles in {sw.Elapsed.TotalSeconds:F1}s (errors: {errorDict.Count}).");
 
