@@ -115,22 +115,16 @@ async Task<int> BatchScrap(string currentEnvBase, string selectedApiKey, int met
 
     var sw = System.Diagnostics.Stopwatch.StartNew();
     List<ArticleDTO> articles = new List<ArticleDTO>();
-    IPmcScraper pmcScraper = null;
-    switch (method)
+    using IPmcScraper pmcScraper = method switch
     {
-        case 1:
-            pmcScraper = new ArticleExtractorXml(
+        XmlMethod => new ArticleExtractorXml(
             apiKey: selectedApiKey,
             timeoutMs: 30_000,
             maxAttempts: 5,
-            retryAfterMs: 110);
-            break;
-        case 2:
-            pmcScraper = new ArticleExtractor();
-            break;
-        default:
-            break;
-    }
+            retryAfterMs: 110),
+        WebMethod => new ArticleExtractor(),
+        _ => throw new ArgumentOutOfRangeException(nameof(method), method, "Method must be 1 (Xml) or 2 (Web).")
+    };
     if (method == XmlMethod)
     {
         articles.AddRange(await pmcScraper.GetArticlesAsync(uniqueIds, splitCount: 8, restTimeMs: 0));
