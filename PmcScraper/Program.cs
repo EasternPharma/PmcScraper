@@ -31,7 +31,25 @@ apikeys[8] = "7076420f8af7e56a27f86d07ba313e966408"; // hamid
 
 string apiKey = apikeys[selectApiKey];
 
-Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\nSelect {selectApiKey} from apikeys: {apiKey}\n");
+
+async Task Status(string currentEnvBase)
+{
+    using (var apiCall = new ArticleApiCall(bases[currentEnvBase]))
+    {
+        var health = await apiCall.HealthCheckAsync();
+        Console.WriteLine($"Health: {health.Status}");
+        ArticleStaticsDto articleStatics = await apiCall.GetArticleStatisticsAsync();
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine("||||||||||||||||||||||||");
+        Console.ForegroundColor= ConsoleColor.White;
+        Console.WriteLine($"All:\t{articleStatics.TotalList}");
+        Console.WriteLine($"Scraped:\t{articleStatics.TotalScraped}");
+        Console.WriteLine($"FullTxt:\t{articleStatics.TotalFullText}");
+        Console.WriteLine($"Error:\n{articleStatics.TotalError}");
+        Console.WriteLine($"\nWorker: {workerName}\nEnv Base: {envBase}\nSelect {selectApiKey} from apikeys: {apiKey}\n");
+    }
+}
+
 
 async Task<int> BatchXML(string currentEnvBase, string apiKey)
 {
@@ -53,14 +71,15 @@ async Task<int> BatchXML(string currentEnvBase, string apiKey)
     retryAfterMs: 110);
 
     var sw = System.Diagnostics.Stopwatch.StartNew();
+    var uniqueIds = ids.Distinct().ToList();
     List<ArticleDTO> articles = await xmlExtractor.GetArticlesAsync(
-        ids,
+        uniqueIds,
         splitCount: 8,
         restTimeMs: 0);
     sw.Stop();
 
     // One entry per claimed PMC id: duplicates in `ids` would make ToDictionary throw on errors.
-    var claimedIdSet = ids.ToHashSet();
+    var claimedIdSet = uniqueIds.ToHashSet();
     var successIds = articles
         .Select(a => a.PmcId)
         .Where(claimedIdSet.Contains)
@@ -73,21 +92,29 @@ async Task<int> BatchXML(string currentEnvBase, string apiKey)
     processCount = articles.Count;
 
     Console.WriteLine(
-        $"Extracted {articles.Count} / {ids.Count} articles in {sw.Elapsed.TotalSeconds:F1}s (errors: {errorDict.Count}).");
+        $"Extracted {articles.Count} / {uniqueIds.Count} articles in {sw.Elapsed.TotalSeconds:F1}s (errors: {errorDict.Count}).");
 
-    var fullTextIds = articles
+    var dedupedArticles = articles
+        .GroupBy(a => a.PmcId)
+        .Select(g =>
+            g.OrderByDescending(a => a.Sections?.Count ?? 0)
+             .ThenByDescending(a => a.AbstractText?.Length ?? 0)
+             .First())
+        .ToList();
+
+    var fullTextIds = dedupedArticles
         .Where(x => x.Sections != null && x.Sections.Count > 0)
         .Select(y => y.PmcId)
         .Where(claimedIdSet.Contains)
         .Distinct()
         .ToList();
-    var updateItems = articles.Select(ArticleUpdateItemDto.FromArticleDTO).ToList();
+    var updateItems = dedupedArticles.Select(ArticleUpdateItemDto.FromArticleDTO).ToList();
 
     using (var apiCall = new ArticleApiCall(bases[currentEnvBase]))
     {
         var health1 = await apiCall.HealthCheckAsync();
         Console.WriteLine($"Health: {health1.Status}");
-        Console.WriteLine($"Submitting {updateItems.Count} articles...");
+        Console.WriteLine($"Submitting {updateItems.Count} unique articles...");
         var response = await apiCall.SubmitScrapeResultsAsync(new ScrapeArticleRequestDto
         {
             User = workerName,
@@ -107,7 +134,8 @@ long totalProcessedCount = 0;
 DateTime overallStartTime = DateTime.Now;
 for (int k = 0; k < 1500; k++)
 {
-    for (var i = 0; i < 5; i++)
+    await Status(envBase);
+    for (var i = 0; i < 10; i++)
     {
         DateTime batchStartTime = DateTime.Now;
         var processedCount = await BatchXML(envBase, apiKey);
@@ -126,4 +154,5 @@ for (int k = 0; k < 1500; k++)
         await Task.Delay(Random.Shared.Next(1000, 3000));
     }
     await Task.Delay(1000);
+    Console.Clear();
 }
