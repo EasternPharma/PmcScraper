@@ -83,22 +83,30 @@ if (!apikeys.TryGetValue(selectApiKey, out string? apiKey))
 
 async Task Status(string currentEnvBase)
 {
-    using var apiCall = new ArticleApiCall(bases[currentEnvBase]);
-    var health = await apiCall.HealthCheckAsync();
-    Console.WriteLine($"Health: {health.Status}");
-    ArticleStaticsDto articleStatics = await apiCall.GetArticleStatisticsAsync();
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.WriteLine("||||||||||||||||||||||||");
-    Console.ForegroundColor = ConsoleColor.White;
-    Console.WriteLine($"All:\t{articleStatics.TotalList}");
-    Console.WriteLine($"Scraped:\t{articleStatics.TotalScraped}");
-    Console.WriteLine($"FullTxt:\t{articleStatics.TotalFullText}");
-    Console.WriteLine($"Error:\n{articleStatics.TotalError}");
-    string methodName = GetMethodName(scrapMethod);
-    string maskedApiKey = apiKey.Length <= 6
-        ? "***"
-        : $"{apiKey[..3]}...{apiKey[^3..]}";
-    Console.WriteLine($"\nMethod: {methodName}\nWorker: {workerName}\nEnv Base: {envBase}\nApiKeyIndex: {selectApiKey} ({maskedApiKey})\n");
+    try
+    {
+        using var apiCall = new ArticleApiCall(bases[currentEnvBase]);
+        var health = await apiCall.HealthCheckAsync();
+        Console.WriteLine($"Health: {health.Status}");
+        ArticleStaticsDto articleStatics = await apiCall.GetArticleStatisticsAsync();
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine("||||||||||||||||||||||||");
+        Console.ForegroundColor = ConsoleColor.White;
+        Console.WriteLine($"All:\t{articleStatics.TotalList}");
+        Console.WriteLine($"Scraped:\t{articleStatics.TotalScraped}");
+        Console.WriteLine($"FullTxt:\t{articleStatics.TotalFullText}");
+        Console.WriteLine($"Error:\n{articleStatics.TotalError}");
+        string methodName = GetMethodName(scrapMethod);
+        string maskedApiKey = apiKey.Length <= 6
+            ? "***"
+            : $"{apiKey[..3]}...{apiKey[^3..]}";
+        Console.WriteLine($"\nMethod: {methodName}\nWorker: {workerName}\nEnv Base: {envBase}\nApiKeyIndex: {selectApiKey} ({maskedApiKey})\n");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"\n_____________\n\nError in Status: {ex.Message}\n\n___________\n");
+        await Task.Delay(20000);
+    }
 }
 
 async Task<int> BatchScrap(string currentEnvBase, string selectedApiKey, int method)
@@ -189,27 +197,38 @@ async Task<int> BatchScrap(string currentEnvBase, string selectedApiKey, int met
 
 long totalProcessedCount = 0;
 DateTime overallStartTime = DateTime.Now;
-for (int k = 0; k < 1500; k++)
+while (true)
 {
-    await Status(envBase);
-    for (var i = 0; i < 10; i++)
+    try
     {
-        DateTime batchStartTime = DateTime.Now;
-        var processedCount = await BatchScrap(envBase, apiKey, scrapMethod);
-        totalProcessedCount += processedCount;
-        var lastBatchDurationSeconds = (DateTime.Now - batchStartTime).TotalSeconds;
-        var totalDurationMinutes = (DateTime.Now - overallStartTime).TotalMinutes;
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine("\n\n██████████████████████\n");
-        Console.ForegroundColor = ConsoleColor.White;
-        Console.WriteLine($"Batch completed in: {lastBatchDurationSeconds:F2} seconds");
-        Console.WriteLine($"Processed this batch: {processedCount}");
-        Console.WriteLine($"Total processed: {totalProcessedCount} (elapsed: {totalDurationMinutes:F2} minutes)");
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine("\n██████████████████████\n\n");
-        Console.ForegroundColor = ConsoleColor.White;
-        await Task.Delay(Random.Shared.Next(1000, 3000));
+        for (int k = 0; k < 1500; k++)
+        {
+            await Status(envBase);
+            for (var i = 0; i < 10; i++)
+            {
+                DateTime batchStartTime = DateTime.Now;
+                var processedCount = await BatchScrap(envBase, apiKey, scrapMethod);
+                totalProcessedCount += processedCount;
+                var lastBatchDurationSeconds = (DateTime.Now - batchStartTime).TotalSeconds;
+                var totalDurationMinutes = (DateTime.Now - overallStartTime).TotalMinutes;
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("\n\n██████████████████████\n");
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine($"Batch completed in: {lastBatchDurationSeconds:F2} seconds");
+                Console.WriteLine($"Processed this batch: {processedCount}");
+                Console.WriteLine($"Total processed: {totalProcessedCount} (elapsed: {totalDurationMinutes:F2} minutes)");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("\n██████████████████████\n\n");
+                Console.ForegroundColor = ConsoleColor.White;
+                await Task.Delay(Random.Shared.Next(1000, 3000));
+            }
+            await Task.Delay(1000);
+            Console.Clear();
+        }
     }
-    await Task.Delay(1000);
-    Console.Clear();
+    catch (Exception ex)
+    {
+        Console.WriteLine($"\n_____________\n\nError: {ex.Message}\n\n___________\n");
+        await Task.Delay(20000);
+    }
 }
