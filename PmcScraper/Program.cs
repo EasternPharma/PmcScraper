@@ -7,6 +7,7 @@ const int WebMethod = 2;
 Dictionary<string, string> bases = new(StringComparer.OrdinalIgnoreCase)
 {
     ["pmc"] = "https://pmc.bregulator.com",
+    ["pmc1"] = "https://pmc1.bregulator.com",
     ["local"] = "http://localhost:8000",
     ["office"] = "http://localhost:1368"
 };
