@@ -29,6 +29,10 @@ static string GetMethodName(int method) => method == XmlMethod ? "Xml" : "Web";
 void ShowUsage()
 {
     Console.WriteLine("Usage:");
+    Console.WriteLine("dotnet run -- test-pmc <pmcId> [apiKeyIndex]");
+    Console.WriteLine("  e.g. dotnet run -- test-pmc 10033084 1");
+    Console.WriteLine("  pmcId may include a PMC prefix (PMC10033084).");
+    Console.WriteLine();
     Console.WriteLine("dotnet run -- <method> [envBase] [workerName] [apiKeyIndex]");
     Console.WriteLine();
     Console.WriteLine("method:");
@@ -38,6 +42,37 @@ void ShowUsage()
     Console.WriteLine($"envBase options: {string.Join(", ", bases.Keys)}");
     Console.WriteLine("example:");
     Console.WriteLine("dotnet run -- 1 pmc colab_xml_1 1");
+}
+
+if (args.Length >= 2 && string.Equals(args[0], "test-pmc", StringComparison.OrdinalIgnoreCase))
+{
+    string idRaw = args[1];
+    var digits = new string(idRaw.Where(char.IsDigit).ToArray());
+    if (!int.TryParse(digits, out var testPmcId) || testPmcId <= 0)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Error.WriteLine("[FATAL] test-pmc needs a numeric id (e.g. 10033084 or PMC10033084).");
+        Console.ResetColor();
+        ShowUsage();
+        return;
+    }
+
+    int testKeyIndex = 1;
+    if (args.Length >= 3 && !int.TryParse(args[2], out testKeyIndex))
+        testKeyIndex = 1;
+
+    if (!apikeys.TryGetValue(testKeyIndex, out string? testApiKey))
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Error.WriteLine($"[FATAL] Invalid apiKeyIndex '{testKeyIndex}'.");
+        Console.ResetColor();
+        ShowUsage();
+        return;
+    }
+
+    bool testOk = await ArticleExtractorXmlTest.FetchAndDumpAsync(testPmcId, testApiKey);
+    Environment.Exit(testOk ? 0 : 1);
+    return;
 }
 
 if (!int.TryParse(args.Length > 0 ? args[0] : "1", out var methodArg) ||
@@ -138,7 +173,7 @@ async Task<int> BatchScrap(string currentEnvBase, string selectedApiKey, int met
         XmlMethod => new ArticleExtractorXml(
             apiKey: selectedApiKey,
             timeoutMs: 30_000,
-            maxAttempts: 5,
+            maxAttempts: 8,
             retryAfterMs: 110),
         WebMethod => new ArticleExtractor(),
         _ => throw new ArgumentOutOfRangeException(nameof(method), method, "Method must be 1 (Xml) or 2 (Web).")

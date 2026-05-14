@@ -1,3 +1,4 @@
+using Newtonsoft.Json;
 using PmcScraper.DTOs;
 using System;
 using System.Linq;
@@ -15,6 +16,44 @@ namespace PmcScraper;
 public static class ArticleExtractorXmlTest
 {
     private const int TestPmcId = 3874642;
+
+    /// <summary>
+    /// Fetches one PMC article via efetch, prints all fields (see <see cref="DumpArticle"/>), and returns whether a non-null article was returned.
+    /// </summary>
+    public static async Task<bool> FetchAndDumpAsync(int pmcId, string? apiKey = null)
+    {
+        Console.WriteLine($"=== ArticleExtractorXml fetch — PMC{pmcId} ===");
+
+        ArticleDTO? article;
+        try
+        {
+            using var extractor = new ArticleExtractorXml(
+                apiKey: apiKey ?? string.Empty,
+                timeoutMs: 60_000,
+                maxAttempts: 5,
+                retryAfterMs: 150);
+
+            article = await extractor.GetArticleAsync(pmcId);
+        }
+        catch (Exception ex)
+        {
+            Fail($"Extractor threw: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+
+        if (article == null)
+        {
+            Fail("Extractor returned null.");
+            return false;
+        }
+
+        Console.WriteLine();
+        DumpArticle(article);
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine("\n=== Done ===");
+        Console.ResetColor();
+        return true;
+    }
 
     public static async Task<bool> RunAsync(string? apiKey = null)
     {
@@ -194,35 +233,43 @@ public static class ArticleExtractorXmlTest
     private static void DumpArticle(ArticleDTO a)
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("--- Parsed article ---");
+        Console.WriteLine("--- Parsed article (all ArticleDTO fields) ---");
         Console.ResetColor();
-        Console.WriteLine($"Title:       {a.Title}");
-        Console.WriteLine($"PmcId:       {a.PmcId}");
-        Console.WriteLine($"PmId:        {a.PmId}");
-        Console.WriteLine($"Doi:         {a.Doi}");
-        Console.WriteLine($"Journal:     {a.Journal}");
-        Console.WriteLine($"Publisher:   {a.Publisher}");
-        Console.WriteLine($"ISSN:        {a.ISSN}");
-        Console.WriteLine($"Volume:      {a.Volume}  Issue: {a.Issue}  fpage: {a.FPage}  lpage: {a.LPage}");
-        Console.WriteLine($"Category:    {a.Category}");
-        Console.WriteLine($"PublishDate: {a.PublishDate:yyyy-MM-dd}");
-        Console.WriteLine($"Authors:     {(a.Authors != null ? string.Join(" | ", a.Authors) : "(null)")}");
-        Console.WriteLine($"Keywords:    {(a.Keywords != null ? string.Join(", ", a.Keywords) : "(null)")}");
+        Console.WriteLine($"PmcId:        {a.PmcId}");
+        Console.WriteLine($"PmId:         {(a.PmId.HasValue ? a.PmId.Value.ToString() : "(null)")}");
+        Console.WriteLine($"Doi:          {a.Doi ?? "(null)"}");
+        Console.WriteLine($"Title:        {a.Title ?? "(null)"}");
+        Console.WriteLine($"Category:     {a.Category ?? "(null)"}");
+        Console.WriteLine($"Journal:      {a.Journal ?? "(null)"}");
+        Console.WriteLine($"Publisher:    {a.Publisher ?? "(null)"}");
+        Console.WriteLine($"Volume:       {a.Volume ?? "(null)"}");
+        Console.WriteLine($"Issue:        {a.Issue ?? "(null)"}");
+        Console.WriteLine($"ISSN:         {a.ISSN ?? "(null)"}");
+        Console.WriteLine($"FPage:        {a.FPage ?? "(null)"}");
+        Console.WriteLine($"LPage:        {a.LPage ?? "(null)"}");
+        Console.WriteLine($"PublishDate:  {(a.PublishDate.HasValue ? a.PublishDate.Value.ToString("yyyy-MM-dd") : "(null)")}");
+        Console.WriteLine($"Authors:      {(a.Authors != null ? string.Join(" | ", a.Authors) : "(null)")}");
+        Console.WriteLine($"Keywords:     {(a.Keywords != null ? string.Join(", ", a.Keywords) : "(null)")}");
 
         string abs = a.AbstractText ?? "(null)";
-        Console.WriteLine($"Abstract ({abs.Length} chars):");
-        Console.WriteLine($"  {Truncate(abs, 400)}");
+        Console.WriteLine($"AbstractText ({abs.Length} chars):");
+        Console.WriteLine(abs);
 
-        Console.WriteLine($"Sections ({a.Sections?.Count ?? 0}):");
+        Console.WriteLine($"Sections:     ({a.Sections?.Count ?? 0} entries)");
         if (a.Sections != null)
         {
             foreach (var kv in a.Sections)
-                Console.WriteLine($"  - {kv.Key} ({kv.Value.Length} chars)");
+            {
+                Console.WriteLine($"  --- {kv.Key} ({kv.Value.Length} chars) ---");
+                Console.WriteLine(kv.Value);
+            }
         }
-    }
 
-    private static string Truncate(string s, int max)
-        => s.Length <= max ? s : s.Substring(0, max) + "…";
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("--- ArticleDTO (JSON, full object) ---");
+        Console.ResetColor();
+        Console.WriteLine(JsonConvert.SerializeObject(a, Formatting.Indented));
+    }
 
     #endregion
 

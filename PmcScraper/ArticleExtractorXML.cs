@@ -138,6 +138,38 @@ public class ArticleExtractorXml : IPmcScraper
         }
     }
 
+    /// <summary>
+    /// Resolves the earliest publication-related date under <paramref name="articleMeta"/>:
+    /// every <c>date</c> / <c>pub-date</c> under <c>pub-history</c>, plus standalone
+    /// <c>pub-date</c> nodes (epub, ppub, collection, then any). Duplicate nodes are ignored.
+    /// </summary>
+    private static DateTime? ResolvePublicationDate(XmlNode articleMeta)
+    {
+        var seen = new HashSet<XmlNode>();
+        var candidates = new List<DateTime>();
+
+        void Consider(XmlNode? node)
+        {
+            if (node == null || !seen.Add(node)) return;
+            var dt = ParsePubDate(node);
+            if (dt.HasValue) candidates.Add(dt.Value);
+        }
+
+        var historyNodes = articleMeta.SelectNodes(".//pub-history//date | .//pub-history//pub-date");
+        if (historyNodes != null)
+        {
+            foreach (XmlNode n in historyNodes)
+                Consider(n);
+        }
+
+        Consider(articleMeta.SelectSingleNode(".//pub-date[@pub-type='epub']"));
+        Consider(articleMeta.SelectSingleNode(".//pub-date[@pub-type='ppub']"));
+        Consider(articleMeta.SelectSingleNode(".//pub-date[@pub-type='collection']"));
+        Consider(articleMeta.SelectSingleNode(".//pub-date"));
+
+        return candidates.Count == 0 ? null : candidates.Min();
+    }
+
     #endregion
 
     #region Abstract Extraction
@@ -724,11 +756,7 @@ public class ArticleExtractorXml : IPmcScraper
             int.TryParse(digits, out pmcId);
         }
 
-        var pubDateNode = articleMeta.SelectSingleNode(".//pub-date[@pub-type='epub']")
-                       ?? articleMeta.SelectSingleNode(".//pub-date[@pub-type='ppub']")
-                       ?? articleMeta.SelectSingleNode(".//pub-date[@pub-type='collection']")
-                       ?? articleMeta.SelectSingleNode(".//pub-date");
-        DateTime? publishDate = ParsePubDate(pubDateNode);
+        DateTime? publishDate = ResolvePublicationDate(articleMeta);
 
         string? journal = GetText(journalMeta, ".//journal-title");
         string? publisher = GetText(journalMeta, ".//publisher-name");
